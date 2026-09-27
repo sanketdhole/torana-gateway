@@ -26,39 +26,118 @@ Torana solves this by sitting inline on the hot path as an intelligent, policy-d
 
 ```mermaid
 flowchart TD
-    subgraph Clients["Agent Frameworks & Callers"]
-        A1["AI Agents / Swarms\n(LangGraph, CrewAI, AutoGen)"]
-        A2["Interactive Clients\n(Claude Desktop, Cursor, IDEs)"]
-        A3["Upstream Autonomous Agents\n(A2A Protocol)"]
+    %% External Entities
+    ControlPlane(("Control Plane"))
+    AgentClients(("Agent Clients"))
+    EnterpriseServices(("Enterprise Services"))
+
+    %% Security Controls Subsystem
+    subgraph SecurityControls["Security Controls"]
+        IdentRes["Identity Resolution<br/><code>[provider.go]</code>"]
+        TokenEx["Token Exchange<br/><code>[sts.go]</code>"]
+        PolicyEng["Policy Engine<br/><code>[engine.go]</code>"]
+        UsageLim["Usage Limits<br/><code>[limiter.go]</code>"]
     end
 
-    subgraph Torana["Torana Enterprise Gateway (gateway-data)"]
-        direction TB
-        Ingress["Multi-Protocol Ingress\n(MCP Streamable HTTP / SSE, A2A, gRPC, REST)"]
-        
-        subgraph PolicyDMZ["Agent Security & Governance DMZ"]
-            AuthN["Identity & Tenant Resolution\n(mTLS, JWT, API Keys)"]
-            STS["STS Token Exchange (RFC 8693)\nDownscoping & Delegation (`act.sub`)"]
-            ToolAuth["MCP Tool Authorization\nCEL Policy Enforcement (`tools/call`)"]
-            ToolFilter["Least-Privilege Tool Discovery\nDynamic Schema Filtering (`tools/list`)"]
-            A2ADiscovery["A2A Agent Card Registry\nSkill Negotiation & Endpoint Rewriting"]
-            Sandbox["Plugin Extensions Sandbox\n(WASM / Isolated Process)"]
-        end
-
-        Router["Lock-Free Hot-Path Router\n(Radix Tree / Atomic Snapshots)"]
+    %% Gateway Runtime Subsystem
+    subgraph GatewayRuntime["Gateway Runtime"]
+        GateEntry["Gateway Entry<br/><code>[main.go]</code>"]
+        WSHandler["WebSocket Handler<br/><code>[handler.go]</code>"]
+        Supervisor["Supervisor<br/><code>[supervisor.go]</code>"]
+        Ingress["HTTP and gRPC<br/><code>[ingress.go]</code>"]
+        Pipeline["Filter Pipeline<br/><code>[chain.go]</code>"]
+        MCPHandler["MCP Handler<br/><code>[handler.go]</code>"]
+        A2AHandler["A2A Handler<br/><code>[handler.go]</code>"]
+        RouteMatch["Route Matching<br/><code>[router.go]</code>"]
     end
 
-    subgraph Enterprise["Protected Enterprise Assets & Upstreams"]
-        T1["MCP Tool Servers\n(DevOps, CRM, Internal Tools)"]
-        T2["Enterprise Data & Vector Assets\n(PostgreSQL, Vector DBs, Knowledge Bases)"]
-        T3["Internal Microservices\n(gRPC / HTTP APIs)"]
-        T4["Foundation Model Providers\n(OpenAI, Anthropic, Bedrock, Self-Hosted)"]
+    %% Configuration and Peers Subsystem
+    subgraph ConfigPeers["Configuration and Peers"]
+        SnapClient["Snapshot Client<br/><code>[client.go]</code>"]
+        PeerMesh["Peer Mesh<br/><code>[manager.go]</code>"]
+        GateConfig["Gateway Config<br/><code>[config.go]</code>"]
     end
 
-    Clients --> Ingress
-    Ingress --> PolicyDMZ
-    PolicyDMZ --> Router
-    Router --> Enterprise
+    %% Upstream Access Subsystem
+    subgraph UpstreamAccess["Upstream Access"]
+        EgressBroker["Egress Broker<br/><code>[egress.go]</code>"]
+        RemoteMCP["Remote MCP<br/><code>[client.go]</code>"]
+        Postgres["PostgreSQL<br/><code>[client.go]</code>"]
+        ModelProviders["Model Providers<br/><code>[client.go]</code>"]
+        HTTPgRPCUp["HTTP and gRPC<br/><code>[http.go]</code>"]
+    end
+
+    %% Plugins and Observability Subsystem
+    subgraph PluginsObservability["Plugins and Observability"]
+        PluginMgr["Plugin Manager<br/><code>[manager.go]</code>"]
+        Telemetry["Telemetry and Audit<br/><code>[observe.go]</code>"]
+        ProcPlugins["Process Plugins<br/><code>[manager.go]</code>"]
+        WASMRuntime["WASM Runtime<br/><code>[manager.go]</code>"]
+    end
+
+    %% Configuration & Peer Sync
+    ControlPlane -->|"sends snapshots"| SnapClient
+    SnapClient -->|"updates snapshot"| GateConfig
+    SnapClient <-->|"syncs snapshots"| PeerMesh
+
+    %% Client Ingress & Delegation
+    TokenEx -.->|"issues delegated tokens"| AgentClients
+    AgentClients -->|"send requests"| Ingress
+
+    %% Core Gateway Lifecycle & Traffic Ingress
+    GateEntry -->|"starts"| Supervisor
+    Supervisor -->|"serves traffic"| Ingress
+    Ingress -->|"passes requests"| Pipeline
+
+    %% Filter Pipeline Interconnections
+    Pipeline -->|"resolves identity"| IdentRes
+    Pipeline -->|"enforces policy"| PolicyEng
+    Pipeline -->|"checks usage"| UsageLim
+    Pipeline --> MCPHandler
+    Pipeline --> A2AHandler
+    Pipeline -->|"routes requests"| RouteMatch
+
+    %% Specialized Protocol Handlers
+    MCPHandler -->|"authorizes tools"| PolicyEng
+    MCPHandler -->|"forwards JSON-RPC"| RemoteMCP
+    A2AHandler -->|"discovers agents"| EgressBroker
+
+    %% Route Matching to Egress
+    RouteMatch -->|"selects upstream"| EgressBroker
+
+    %% Egress Broker Dispatch to Upstreams
+    EgressBroker -->|"dispatches MCP"| RemoteMCP
+    EgressBroker -->|"dispatches queries"| Postgres
+    EgressBroker -->|"dispatches prompts"| ModelProviders
+    EgressBroker -->|"dispatches calls"| HTTPgRPCUp
+
+    %% Upstreams to Enterprise Services
+    RemoteMCP -->|"accesses assets"| EnterpriseServices
+    Postgres -->|"accesses assets"| EnterpriseServices
+    ModelProviders -->|"accesses assets"| EnterpriseServices
+    HTTPgRPCUp -->|"accesses assets"| EnterpriseServices
+
+    %% Plugins & Observability Wiring
+    Pipeline -.->|"runs filters"| PluginMgr
+    Pipeline -.->|"emits telemetry"| Telemetry
+    PluginMgr -->|"registers plugins"| ProcPlugins
+    PluginMgr -->|"loads WASM"| WASMRuntime
+    Telemetry -.->|"audits decisions"| PolicyEng
+
+    %% Node Styling
+    classDef security fill:#FEF3C7,stroke:#F59E0B,stroke-width:1.5px,color:#92400E;
+    classDef runtime fill:#F0F9FF,stroke:#0284C7,stroke-width:1.5px,color:#0369A1;
+    classDef config fill:#FFE4E6,stroke:#F43F5E,stroke-width:1.5px,color:#BE123C;
+    classDef upstream fill:#ECFDF5,stroke:#10B981,stroke-width:1.5px,color:#065F46;
+    classDef plugin fill:#EEF2FF,stroke:#6366F1,stroke-width:1.5px,color:#3730A3;
+    classDef actor fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0369A1;
+
+    class IdentRes,TokenEx,PolicyEng,UsageLim security;
+    class GateEntry,WSHandler,Supervisor,Ingress,Pipeline,MCPHandler,A2AHandler,RouteMatch runtime;
+    class SnapClient,PeerMesh,GateConfig config;
+    class EgressBroker,RemoteMCP,Postgres,ModelProviders,HTTPgRPCUp upstream;
+    class PluginMgr,Telemetry,ProcPlugins,WASMRuntime plugin;
+    class ControlPlane,AgentClients,EnterpriseServices actor;
 ```
 
 ---
