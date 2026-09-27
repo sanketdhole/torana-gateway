@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-27T23:11:44.991673Z",
+  "routes": [
+    {
+      "id": "route-openai-llm",
+      "path": "/v1/chat/completions",
+      "method": "POST",
+      "upstream_id": "upstream-llm-primary",
+      "policy_ids": [
+        "policy-auth-jwt",
+        "policy-cel-guard"
+      ],
+      "timeout_ms": 60000
+    },
+    {
+      "id": "route-mcp-tools",
+      "path": "/mcp",
+      "path_prefix": true,
+      "method": "POST",
+      "upstream_id": "upstream-mcp-server",
+      "policy_ids": [
+        "policy-auth-jwt"
+      ],
+      "timeout_ms": 30000
+    }
+  ],
+  "upstreams": [
+    {
+      "id": "upstream-llm-primary",
+      "protocol": "llm",
+      "endpoints": [
+        "https://api.openai.com"
+      ],
+      "timeout_ms": 60000,
+      "max_conns": 100
+    },
+    {
+      "id": "upstream-mcp-server",
+      "protocol": "mcp",
+      "endpoints": [
+        "http://127.0.0.1:8090"
+      ],
+      "timeout_ms": 30000,
+      "max_conns": 50
+    }
+  ],
+  "policies": [
+    {
+      "id": "policy-auth-jwt",
+      "name": "Enterprise JWT Authentication",
+      "type": "authn",
+      "action": "ALLOW",
+      "parameters": {
+        "provider": "default-jwt"
+      }
+    },
+    {
+      "id": "policy-cel-guard",
+      "name": "Prompt Security \u0026 Data Exfiltration Guard",
+      "type": "cel",
+      "cel_expression": "request.auth.tenant_id != ''",
+      "action": "ALLOW"
+    }
+  ],
+  "token_budgets": [
+    {
+      "tenant_id": "tenant-engineering",
+      "model_id": "gpt-4o",
+      "max_prompt_tokens_per_min": 100000,
+      "max_completion_tokens_per_min": 50000,
+      "max_cost_per_day": 250
+    }
+  ]
+}

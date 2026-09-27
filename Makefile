@@ -1,16 +1,30 @@
-.PHONY: all build test bench lint vet proto clean docker-build mockplatform fuzz chaos bench-load profile
+.PHONY: all build test bench lint vet proto clean docker-build mockplatform fuzz chaos bench-load profile controlplane controlplane-ui run-controlplane test-controlplane
 
 VERSION ?= 0.1.0-dev
 BIN_DIR = bin
 BINARY = $(BIN_DIR)/gateway-data
+CP_BINARY = $(BIN_DIR)/torana-controlplane
 GO ?= /usr/local/go/bin/go
 PROTOC ?= protoc
 
-all: vet test build
+all: vet test build controlplane
 
 build:
 	mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w -X main.Version=$(VERSION)" -o $(BINARY) ./cmd/gateway-data
+
+controlplane-ui:
+	cd controlplane/ui && npm run build
+
+controlplane: controlplane-ui
+	mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w -X main.Version=$(VERSION)" -o $(CP_BINARY) ./controlplane/cmd/server
+
+run-controlplane:
+	$(GO) run ./controlplane/cmd/server
+
+test-controlplane:
+	$(GO) test -v ./controlplane/pkg/...
 
 mockplatform:
 	$(GO) run ./test/mockplatform
