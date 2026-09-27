@@ -169,24 +169,16 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Strip client-controlled headers that must only be set by verified identity or server filters
+	r.Header.Del("X-Identity-Claims")
+	r.Header.Del("X-Estimated-Tokens")
+
 	// 2. Extract matching criteria with zero allocations on hot path
 	criteria := router.MatchCriteria{
 		Host:   r.Host,
 		Method: r.Method,
 		Path:   r.URL.Path,
 		Header: r.Header,
-	}
-
-	var claimsMap map[string]string
-	if claimHdr := r.Header.Get("X-Identity-Claims"); claimHdr != "" {
-		claimsMap = make(map[string]string)
-		for _, pair := range strings.Split(claimHdr, ",") {
-			parts := strings.SplitN(pair, "=", 2)
-			if len(parts) == 2 {
-				claimsMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-			}
-		}
-		criteria.Claims = claimsMap
 	}
 
 	// 3. Lock-free route resolution
@@ -209,7 +201,7 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 
 	env.Route = match.Route
 	env.Upstream = match.Upstream
-	env.Claims = claimsMap
+	env.Claims = make(map[string]string)
 	env.PeerInfo = pipeline.PeerInfo{
 		RemoteIP: r.RemoteAddr,
 		Protocol: r.Proto,
@@ -217,21 +209,13 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Run Phase 0: Authn
-	if l.chain != nil {
-		decision, err := l.chain.ExecutePhase(r.Context(), env, pipeline.PhaseAuthn, 0)
-		if err != nil || decision.Action == pipeline.ActionHalt || decision.Action == pipeline.ActionDrop {
-			l.handleHalt(w, env, decision, startTime, err)
-			return
-		}
+	if !l.runPhase(r.Context(), w, env, pipeline.PhaseAuthn, startTime) {
+		return
 	}
 
 	// 6. Run Phase 1: Request Headers
-	if l.chain != nil {
-		decision, err := l.chain.ExecutePhase(r.Context(), env, pipeline.PhaseRequestHeaders, 0)
-		if err != nil || decision.Action == pipeline.ActionHalt || decision.Action == pipeline.ActionDrop {
-			l.handleHalt(w, env, decision, startTime, err)
-			return
-		}
+	if !l.runPhase(r.Context(), w, env, pipeline.PhaseRequestHeaders, startTime) {
+		return
 	}
 
 	// Check for WebSocket upgrade
@@ -241,27 +225,23 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for MCP protocol
-	if l.mcpHandler != nil && (match.Upstream.Protocol == "mcp" || r.Header.Get("Mcp-Session-Id") != "" || strings.HasSuffix(r.URL.Path, "/sse")) {
+	// Check for MCP protocol based strictly on matched upstream protocol
+	if l.mcpHandler != nil && match.Upstream.Protocol == "mcp" {
 		l.mcpHandler.ServeHTTP(w, r, match.Upstream, env)
 		l.emitTelemetry(env, http.StatusOK, time.Since(startTime), "")
 		return
 	}
 
-	// Check for A2A protocol
-	if l.a2aHandler != nil && (match.Upstream.Protocol == "a2a" || strings.HasPrefix(r.URL.Path, "/.well-known/agent") || strings.Contains(r.URL.Path, "/tasks") || strings.Contains(r.URL.Path, "/messages")) {
+	// Check for A2A protocol based strictly on matched upstream protocol
+	if l.a2aHandler != nil && match.Upstream.Protocol == "a2a" {
 		l.a2aHandler.ServeHTTP(w, r, match.Upstream, env)
 		l.emitTelemetry(env, http.StatusOK, time.Since(startTime), "")
 		return
 	}
 
 	// 6. Run Phase 2: Request Body
-	if l.chain != nil {
-		decision, err := l.chain.ExecutePhase(r.Context(), env, pipeline.PhaseRequestBody, 0)
-		if err != nil || decision.Action == pipeline.ActionHalt || decision.Action == pipeline.ActionDrop {
-			l.handleHalt(w, env, decision, startTime, err)
-			return
-		}
+	if !l.runPhase(r.Context(), w, env, pipeline.PhaseRequestBody, startTime) {
+		return
 	}
 
 	// 7. Resolve Egress Client
@@ -291,15 +271,26 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = resp.Body.Close() }()
 
 	// 9. Run Phase 3: Response Headers
-	if l.chain != nil {
-		respEnv := pipeline.GetEnvelope(env.RequestID, pipeline.PhaseResponseHeaders, env.Method, env.Path, resp.Headers, resp.Body)
-		defer pipeline.PutEnvelope(respEnv)
+	respEnv := pipeline.GetEnvelope(env.RequestID, pipeline.PhaseResponseHeaders, env.Method, env.Path, resp.Headers, resp.Body)
+	defer pipeline.PutEnvelope(respEnv)
 
-		decision, err := l.chain.ExecutePhase(r.Context(), respEnv, pipeline.PhaseResponseHeaders, 0)
-		if err != nil || decision.Action == pipeline.ActionHalt || decision.Action == pipeline.ActionDrop {
-			l.handleHalt(w, env, decision, startTime, err)
-			return
+	respEnv.Route = env.Route
+	respEnv.Upstream = env.Upstream
+	respEnv.PeerInfo = env.PeerInfo
+	if env.Claims != nil {
+		respEnv.Claims = make(map[string]string, len(env.Claims))
+		for k, v := range env.Claims {
+			respEnv.Claims[k] = v
 		}
+	}
+	if env.Metadata != nil {
+		for k, v := range env.Metadata {
+			respEnv.Metadata[k] = v
+		}
+	}
+
+	if !l.runPhase(r.Context(), w, respEnv, pipeline.PhaseResponseHeaders, startTime) {
+		return
 	}
 
 	// 10. Copy response headers to client
@@ -333,6 +324,18 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 
 	// 12. Emit telemetry metadata
 	l.emitTelemetry(env, resp.StatusCode, time.Since(startTime), "")
+}
+
+func (l *HTTPListener) runPhase(ctx context.Context, w http.ResponseWriter, env *pipeline.Envelope, phase pipeline.Phase, startTime time.Time) bool {
+	if l.chain == nil {
+		return true
+	}
+	decision, err := l.chain.ExecutePhase(ctx, env, phase, 0)
+	if err != nil || decision.Action == pipeline.ActionHalt || decision.Action == pipeline.ActionDrop {
+		l.handleHalt(w, env, decision, startTime, err)
+		return false
+	}
+	return true
 }
 
 func (l *HTTPListener) handleHalt(w http.ResponseWriter, env *pipeline.Envelope, d pipeline.Decision, start time.Time, err error) {

@@ -70,3 +70,10 @@ func (tb *TokenBucket) refill(now time.Time) {
 	tb.tokens = math.Min(tb.capacity, tb.tokens+elapsed*tb.rate)
 	tb.lastRefill = now
 }
+
+// IsIdle checks whether the token bucket has been inactive for longer than idleTTL and is replenished.
+func (tb *TokenBucket) IsIdle(now time.Time, idleTTL time.Duration) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return now.Sub(tb.lastRefill) > idleTTL && tb.tokens >= tb.capacity
+}

@@ -188,20 +188,20 @@ func (p *APIKeyProvider) ValidateAPIKey(ctx context.Context, rawKey string) (*Id
 
 	// 3. Compute Hash & Constant-Time Compare
 	var computed []byte
-	switch stored.Algorithm {
+	alg := stored.Algorithm
+	if alg == "" {
+		alg = HashAlgorithmArgon2id
+	}
+
+	switch alg {
 	case HashAlgorithmArgon2id:
 		params := stored.Argon2Params
 		if params.Memory == 0 {
 			params = DefaultArgon2Params()
 		}
 		computed = argon2.IDKey([]byte(secret), stored.Salt, params.Iterations, params.Memory, params.Parallelism, params.KeyLength)
-	case HashAlgorithmSHA256, "":
-		h := sha256.New()
-		h.Write([]byte(secret))
-		if len(stored.Salt) > 0 {
-			h.Write(stored.Salt)
-		}
-		computed = h.Sum(nil)
+	case HashAlgorithmSHA256:
+		computed = HashKeySHA256(secret, stored.Salt)
 	default:
 		return nil, fmt.Errorf("%w: unsupported hash algorithm %s", ErrInvalidCredentials, stored.Algorithm)
 	}
@@ -222,7 +222,6 @@ func (p *APIKeyProvider) ValidateAPIKey(ctx context.Context, rawKey string) (*Id
 
 // SplitKey separates the key into public prefix and secret body.
 // Supported formats:
-// - Direct registered prefix matching from store (e.g. "torana_live_pref1_secret")
 // - Delimited: "<prefix>.<secret>" or "<prefix>_<secret>"
 // - Fixed length fallback: "<prefix><secret>"
 func (p *APIKeyProvider) SplitKey(rawKey string) (prefix, secret string) {
@@ -231,35 +230,29 @@ func (p *APIKeyProvider) SplitKey(rawKey string) (prefix, secret string) {
 		return "", ""
 	}
 
-	// 1. If store supports prefix listing, match longest registered prefix
-	if p.store != nil {
-		if ims, ok := p.store.(*InMemoryKeyStore); ok {
-			ims.mu.RLock()
-			var bestPref string
-			for pref := range ims.keys {
-				if strings.HasPrefix(trimmed, pref) && len(pref) > len(bestPref) {
-					bestPref = pref
-				}
-			}
-			ims.mu.RUnlock()
+	// 1. Delimited by dot: "<prefix>.<secret>"
+	if idx := strings.Index(trimmed, "."); idx > 0 && idx < len(trimmed)-1 {
+		return trimmed[:idx], trimmed[idx+1:]
+	}
 
-			if bestPref != "" {
-				rem := strings.TrimPrefix(trimmed, bestPref)
-				rem = strings.TrimPrefix(rem, "_")
-				rem = strings.TrimPrefix(rem, ".")
-				if rem != "" {
-					return bestPref, rem
+	// 2. If store is present, check candidate prefix slices against store in O(1)
+	if p.store != nil {
+		for i := len(trimmed) - 1; i > 0; i-- {
+			if trimmed[i] == '_' {
+				candidate := trimmed[:i]
+				if _, ok := p.store.GetByPrefix(candidate); ok {
+					return candidate, trimmed[i+1:]
 				}
 			}
 		}
 	}
 
-	// 2. Check for last delimiter . or _
-	if idx := strings.LastIndexAny(trimmed, "._"); idx > 0 && idx < len(trimmed)-1 {
+	// 3. Delimited by underscore (single or last)
+	if idx := strings.LastIndex(trimmed, "_"); idx > 0 && idx < len(trimmed)-1 {
 		return trimmed[:idx], trimmed[idx+1:]
 	}
 
-	// 3. Fixed length prefix fallback
+	// 4. Fixed length prefix fallback
 	if len(trimmed) > p.prefixLength {
 		return trimmed[:p.prefixLength], trimmed[p.prefixLength:]
 	}
@@ -294,13 +287,13 @@ func isLikelyJWT(token string) bool {
 	return strings.Count(token, ".") == 2
 }
 
-// HashKeySHA256 is a helper to generate a stored SHA-256 hash and salt for an API key secret.
+// HashKeySHA256 is a helper to generate a stored SHA-256 hash and salt for an API key secret using standard salt || secret ordering.
 func HashKeySHA256(secret string, salt []byte) []byte {
 	h := sha256.New()
-	h.Write([]byte(secret))
 	if len(salt) > 0 {
 		h.Write(salt)
 	}
+	h.Write([]byte(secret))
 	return h.Sum(nil)
 }
 

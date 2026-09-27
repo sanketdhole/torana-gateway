@@ -25,12 +25,12 @@ func EstimateTokens(bodyBytes []byte, defaultMaxTokens int64) int64 {
 		return defaultMaxTokens
 	}
 
-	// Try extracting max_tokens and prompt/messages from JSON
+	// Use json.RawMessage to avoid parsing deep conversation trees into arbitrary maps/slices
 	var payload struct {
-		Prompt              any   `json:"prompt"`
-		Messages            []any `json:"messages"`
-		MaxTokens           int64 `json:"max_tokens"`
-		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+		Prompt              json.RawMessage `json:"prompt"`
+		Messages            json.RawMessage `json:"messages"`
+		MaxTokens           int64           `json:"max_tokens"`
+		MaxCompletionTokens int64           `json:"max_completion_tokens"`
 	}
 
 	inputChars := 0
@@ -43,12 +43,11 @@ func EstimateTokens(bodyBytes []byte, defaultMaxTokens int64) int64 {
 			maxTokens = payload.MaxCompletionTokens
 		}
 
-		if s, ok := payload.Prompt.(string); ok {
-			inputChars += len(s)
-		} else if len(payload.Messages) > 0 {
-			// Estimate characters in messages
-			msgBytes, _ := json.Marshal(payload.Messages)
-			inputChars += len(msgBytes)
+		if len(payload.Prompt) > 0 {
+			inputChars += len(payload.Prompt)
+		}
+		if len(payload.Messages) > 0 {
+			inputChars += len(payload.Messages)
 		}
 	} else {
 		// Fallback: estimate based on total body length
@@ -64,6 +63,22 @@ func EstimateTokens(bodyBytes []byte, defaultMaxTokens int64) int64 {
 	return inputTokens + maxTokens
 }
 
+// Target struct for single-pass unmarshaling (OpenAI, Anthropic, Gemini)
+type targetedUsageResponse struct {
+	Usage *struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+		InputTokens      int64 `json:"input_tokens"`
+		OutputTokens     int64 `json:"output_tokens"`
+	} `json:"usage"`
+	UsageMetadata *struct {
+		PromptTokenCount     int64 `json:"promptTokenCount"`
+		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+		TotalTokenCount      int64 `json:"totalTokenCount"`
+	} `json:"usageMetadata"`
+}
+
 // ParseUsageFromBody parses token usage from standard LLM response payloads.
 // Supports:
 // - OpenAI: usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
@@ -74,24 +89,66 @@ func ParseUsageFromBody(bodyBytes []byte) (*TokenUsage, bool) {
 		return nil, false
 	}
 
+	// Fast path: targeted struct unmarshal avoiding generic map[string]any allocations (P5)
+	var target targetedUsageResponse
+	if err := json.Unmarshal(bodyBytes, &target); err == nil {
+		if target.Usage != nil {
+			prompt := target.Usage.PromptTokens
+			if prompt == 0 {
+				prompt = target.Usage.InputTokens
+			}
+			completion := target.Usage.CompletionTokens
+			if completion == 0 {
+				completion = target.Usage.OutputTokens
+			}
+			total := target.Usage.TotalTokens
+			if total == 0 {
+				total = prompt + completion
+			}
+			if total > 0 || prompt > 0 || completion > 0 {
+				return &TokenUsage{
+					PromptTokens:     prompt,
+					CompletionTokens: completion,
+					TotalTokens:      total,
+				}, true
+			}
+		}
+
+		if target.UsageMetadata != nil {
+			prompt := target.UsageMetadata.PromptTokenCount
+			completion := target.UsageMetadata.CandidatesTokenCount
+			total := target.UsageMetadata.TotalTokenCount
+			if total == 0 {
+				total = prompt + completion
+			}
+			if total > 0 {
+				return &TokenUsage{
+					PromptTokens:     prompt,
+					CompletionTokens: completion,
+					TotalTokens:      total,
+				}, true
+			}
+		}
+	}
+
+	// Slow fallback: generic unmarshal for non-standard provider structures
 	var root map[string]any
 	if err := json.Unmarshal(bodyBytes, &root); err != nil {
 		return nil, false
 	}
 
-	// 1. Check OpenAI / Anthropic format ("usage")
 	if uVal, ok := root["usage"]; ok {
 		if uMap, isMap := uVal.(map[string]any); isMap {
 			return extractFromMap(uMap)
 		}
 	}
 
-	// 2. Check Gemini format ("usageMetadata")
 	if uVal, ok := root["usageMetadata"]; ok {
 		if uMap, isMap := uVal.(map[string]any); isMap {
-			prompt := getInt64(uMap, "promptTokenCount")
-			completion := getInt64(uMap, "candidatesTokenCount")
-			total := getInt64(uMap, "totalTokenCount")
+			normalized := normalizeKeys(uMap)
+			prompt := getInt64(normalized, "prompttokencount")
+			completion := getInt64(normalized, "candidatestokencount")
+			total := getInt64(normalized, "totaltokencount")
 			if total == 0 {
 				total = prompt + completion
 			}
@@ -126,18 +183,29 @@ func ParseUsageFromChunk(chunk []byte) (*TokenUsage, bool) {
 	return nil, false
 }
 
+func normalizeKeys(m map[string]any) map[string]any {
+	norm := make(map[string]any, len(m))
+	for k, v := range m {
+		norm[strings.ToLower(k)] = v
+	}
+	return norm
+}
+
 func extractFromMap(m map[string]any) (*TokenUsage, bool) {
-	prompt := getInt64(m, "prompt_tokens")
+	// Normalize keys once upfront (P9)
+	normalized := normalizeKeys(m)
+
+	prompt := getInt64(normalized, "prompt_tokens")
 	if prompt == 0 {
-		prompt = getInt64(m, "input_tokens")
+		prompt = getInt64(normalized, "input_tokens")
 	}
 
-	completion := getInt64(m, "completion_tokens")
+	completion := getInt64(normalized, "completion_tokens")
 	if completion == 0 {
-		completion = getInt64(m, "output_tokens")
+		completion = getInt64(normalized, "output_tokens")
 	}
 
-	total := getInt64(m, "total_tokens")
+	total := getInt64(normalized, "total_tokens")
 	if total == 0 {
 		total = prompt + completion
 	}
@@ -155,16 +223,6 @@ func extractFromMap(m map[string]any) (*TokenUsage, bool) {
 
 func getInt64(m map[string]any, key string) int64 {
 	v, ok := m[key]
-	if !ok {
-		// Also check case-insensitive or snake_case
-		for mk, mv := range m {
-			if strings.EqualFold(mk, key) {
-				v = mv
-				ok = true
-				break
-			}
-		}
-	}
 	if !ok {
 		return 0
 	}

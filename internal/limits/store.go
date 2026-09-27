@@ -3,6 +3,7 @@ package limits
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -210,19 +211,52 @@ func (s *LocalCounterStore) backgroundSync() {
 	}
 }
 
-// Sync cleans up expired counters and synchronizes usage state.
+// Sync cleans up expired counters and evicts idle token buckets (P6, P7).
 func (s *LocalCounterStore) Sync(_ context.Context) error {
 	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
+	// 1. Scan under RLock to identify expired counters and idle token buckets
+	var expiredCounters []string
+	var idleBuckets []string
+
+	s.mu.RLock()
 	for k, wc := range s.counters {
 		wc.mu.Lock()
 		if now.After(wc.expiresAt) {
-			delete(s.counters, k)
+			expiredCounters = append(expiredCounters, k)
 		}
 		wc.mu.Unlock()
 	}
+
+	for k, tb := range s.buckets {
+		if tb.IsIdle(now, 5*time.Minute) {
+			idleBuckets = append(idleBuckets, k)
+		}
+	}
+	s.mu.RUnlock()
+
+	// 2. Only acquire write lock to delete the identified expired keys
+	if len(expiredCounters) > 0 || len(idleBuckets) > 0 {
+		s.mu.Lock()
+		for _, k := range expiredCounters {
+			if wc, ok := s.counters[k]; ok {
+				wc.mu.Lock()
+				if now.After(wc.expiresAt) {
+					delete(s.counters, k)
+				}
+				wc.mu.Unlock()
+			}
+		}
+		for _, k := range idleBuckets {
+			if tb, ok := s.buckets[k]; ok {
+				if tb.IsIdle(now, 5*time.Minute) {
+					delete(s.buckets, k)
+				}
+			}
+		}
+		s.mu.Unlock()
+	}
+
 	return nil
 }
 
@@ -246,27 +280,71 @@ type RedisClient interface {
 
 // RedisCounterStore implements CounterStore against an external Redis instance.
 type RedisCounterStore struct {
-	client RedisClient
-	local  *LocalCounterStore // fallback for rate limiting
+	client          RedisClient
+	local           *LocalCounterStore // fallback for rate limiting or when explicitly allowed
+	logger          *slog.Logger
+	failClosed      bool
+	fallbackToLocal bool
+}
+
+// RedisStoreOption configures RedisCounterStore behavior.
+type RedisStoreOption func(*RedisCounterStore)
+
+// WithRedisLogger sets the logger for redis operations and fallback warnings.
+func WithRedisLogger(logger *slog.Logger) RedisStoreOption {
+	return func(r *RedisCounterStore) {
+		r.logger = logger
+	}
+}
+
+// WithRedisFailClosed controls whether Redis failures fail-closed (return error) instead of falling back.
+func WithRedisFailClosed(failClosed bool) RedisStoreOption {
+	return func(r *RedisCounterStore) {
+		r.failClosed = failClosed
+	}
+}
+
+// WithRedisFallbackToLocal allows fallback to local in-memory counter if Redis fails.
+func WithRedisFallbackToLocal(fallback bool) RedisStoreOption {
+	return func(r *RedisCounterStore) {
+		r.fallbackToLocal = fallback
+	}
 }
 
 // NewRedisCounterStore creates a Redis-backed counter store.
-func NewRedisCounterStore(client RedisClient, peerProvider PeerCountProvider) *RedisCounterStore {
-	return &RedisCounterStore{
-		client: client,
-		local:  NewLocalCounterStore(peerProvider, 1*time.Minute),
+func NewRedisCounterStore(client RedisClient, peerProvider PeerCountProvider, opts ...RedisStoreOption) *RedisCounterStore {
+	store := &RedisCounterStore{
+		client:          client,
+		local:           NewLocalCounterStore(peerProvider, 1*time.Minute),
+		failClosed:      true, // S3: default fail-closed so budget enforcement is not silently bypassed
+		fallbackToLocal: false,
 	}
+	for _, opt := range opts {
+		opt(store)
+	}
+	return store
 }
 
 func (r *RedisCounterStore) Reserve(ctx context.Context, key string, amount int64, limit int64, window Window) (*ReservationResult, error) {
 	if r.client == nil {
-		return r.local.Reserve(ctx, key, amount, limit, window)
+		if r.fallbackToLocal && r.local != nil {
+			return r.local.Reserve(ctx, key, amount, limit, window)
+		}
+		return nil, fmt.Errorf("redis client is nil and fallback is disabled")
 	}
 
 	newVal, err := r.client.IncrBy(ctx, key, amount)
 	if err != nil {
-		// Fail-open or fallback to local
-		return r.local.Reserve(ctx, key, amount, limit, window)
+		if r.logger != nil {
+			r.logger.ErrorContext(ctx, "redis counter store reserve error", "key", key, "error", err)
+		}
+		if r.fallbackToLocal && r.local != nil {
+			if r.logger != nil {
+				r.logger.WarnContext(ctx, "falling back to local counter store during redis failure", "key", key)
+			}
+			return r.local.Reserve(ctx, key, amount, limit, window)
+		}
+		return nil, fmt.Errorf("redis limit reserve failed: %w", err)
 	}
 
 	if newVal == amount {
@@ -296,10 +374,25 @@ func (r *RedisCounterStore) Reserve(ctx context.Context, key string, amount int6
 
 func (r *RedisCounterStore) Reconcile(ctx context.Context, key string, delta int64, window Window) error {
 	if r.client == nil {
-		return r.local.Reconcile(ctx, key, delta, window)
+		if r.fallbackToLocal && r.local != nil {
+			return r.local.Reconcile(ctx, key, delta, window)
+		}
+		return fmt.Errorf("redis client is nil and fallback is disabled")
 	}
 	_, err := r.client.IncrBy(ctx, key, delta)
-	return err
+	if err != nil {
+		if r.logger != nil {
+			r.logger.ErrorContext(ctx, "redis counter store reconcile error", "key", key, "error", err)
+		}
+		if r.fallbackToLocal && r.local != nil {
+			if r.logger != nil {
+				r.logger.WarnContext(ctx, "falling back to local counter store during redis reconcile failure", "key", key)
+			}
+			return r.local.Reconcile(ctx, key, delta, window)
+		}
+		return fmt.Errorf("redis reconcile failed: %w", err)
+	}
+	return nil
 }
 
 func (r *RedisCounterStore) AllowRate(ctx context.Context, key string, rate float64, burst int64) (bool, time.Duration, error) {

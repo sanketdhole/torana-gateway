@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strings"
@@ -157,6 +158,7 @@ func (c *jwksCache) fetchLocked(ctx context.Context) error {
 	for _, jwk := range jwks.Keys {
 		pubKey, err := parseJWK(jwk)
 		if err != nil {
+			slog.Warn("failed to parse JWK from JWKS endpoint", "kid", jwk.Kid, "kty", jwk.Kty, "error", err)
 			continue
 		}
 		newKeys[jwk.Kid] = pubKey

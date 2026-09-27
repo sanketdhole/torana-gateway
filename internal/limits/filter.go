@@ -83,6 +83,9 @@ func (f *PreCheckFilter) Process(ctx context.Context, env *pipeline.Envelope) (p
 }
 
 func (f *PreCheckFilter) Close() error {
+	if f.limiter != nil {
+		return f.limiter.Close()
+	}
 	return nil
 }
 
@@ -204,10 +207,13 @@ func (f *ReconciliationFilter) Process(ctx context.Context, env *pipeline.Envelo
 		}
 	}
 
-	_ = f.limiter.Reconcile(ctx, reservationID, actualTokens)
+	if err := f.limiter.Reconcile(ctx, reservationID, actualTokens); err != nil {
+		return pipeline.ContinueDecision(), fmt.Errorf("limits reconciliation failed for reservation %s: %w", reservationID, err)
+	}
 	return pipeline.ContinueDecision(), nil
 }
 
 func (f *ReconciliationFilter) Close() error {
 	return nil
 }
+

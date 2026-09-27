@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -70,10 +72,10 @@ func (m *SessionManager) GetOrCreate(clientSessionID string, upstreamSessionID s
 	defer m.mu.Unlock()
 
 	if clientSessionID == "" {
-		clientSessionID = fmt.Sprintf("mcp-client-%d", time.Now().UnixNano())
+		clientSessionID = generateSecureSessionID("mcp-client")
 	}
 	if upstreamSessionID == "" {
-		upstreamSessionID = fmt.Sprintf("mcp-up-%d", time.Now().UnixNano())
+		upstreamSessionID = generateSecureSessionID("mcp-up")
 	}
 
 	if sess, ok := m.sessions[clientSessionID]; ok {
@@ -127,4 +129,10 @@ func (m *SessionManager) CleanupExpired() int {
 		}
 	}
 	return purged
+}
+
+func generateSecureSessionID(prefix string) string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b[:]))
 }

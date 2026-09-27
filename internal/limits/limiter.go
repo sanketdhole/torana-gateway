@@ -14,8 +14,18 @@ type LimiterConfig struct {
 	Store          CounterStore
 	DefaultBudget  *BudgetRule
 	DefaultRate    *RateLimitRule
-	BudgetsByKey   map[string]*BudgetRule    // Keyed by Team / Model / Route
-	RatesByKey     map[string]*RateLimitRule // Keyed by Team / Identity / Route
+	// BudgetsByKey maps dimension keys to budget rules.
+	// Lookup precedence order:
+	//  1. Model: matches "model:<ModelID>" or raw "<ModelID>" (e.g., "gpt-4o")
+	//  2. Team: matches "team:<TeamID>" or raw "<TeamID>" (e.g., "team-alpha")
+	//  3. Route: matches "route:<RoutePathOrID>" or raw "<RoutePathOrID>" (e.g., "/v1/chat/completions")
+	BudgetsByKey   map[string]*BudgetRule
+	// RatesByKey maps dimension keys to rate limit rules.
+	// Lookup precedence order:
+	//  1. Team: matches "team:<TeamID>" or raw "<TeamID>" (e.g., "team-alpha")
+	//  2. Identity: matches "identity:<ClientID>" or raw "<ClientID>" (e.g., "service-account-1")
+	//  3. Route: matches "route:<RoutePathOrID>" or raw "<RoutePathOrID>" (e.g., "/v1/chat/completions")
+	RatesByKey     map[string]*RateLimitRule
 	ReservationTTL time.Duration
 }
 
@@ -186,16 +196,31 @@ func (l *Limiter) Reconcile(ctx context.Context, reservationID string, actualTok
 func (l *Limiter) resolveBudgetRule(keys DimensionKeys) *BudgetRule {
 	if l.budgetsByKey != nil {
 		// Specific model budget
-		if b, ok := l.budgetsByKey[keys.Model]; ok {
-			return b
+		if keys.Model != "" {
+			if b, ok := l.budgetsByKey["model:"+keys.Model]; ok {
+				return b
+			}
+			if b, ok := l.budgetsByKey[keys.Model]; ok {
+				return b
+			}
 		}
 		// Specific team budget
-		if b, ok := l.budgetsByKey[keys.Team]; ok {
-			return b
+		if keys.Team != "" {
+			if b, ok := l.budgetsByKey["team:"+keys.Team]; ok {
+				return b
+			}
+			if b, ok := l.budgetsByKey[keys.Team]; ok {
+				return b
+			}
 		}
 		// Specific route budget
-		if b, ok := l.budgetsByKey[keys.Route]; ok {
-			return b
+		if keys.Route != "" {
+			if b, ok := l.budgetsByKey["route:"+keys.Route]; ok {
+				return b
+			}
+			if b, ok := l.budgetsByKey[keys.Route]; ok {
+				return b
+			}
 		}
 	}
 	return l.defaultBudget
@@ -203,14 +228,32 @@ func (l *Limiter) resolveBudgetRule(keys DimensionKeys) *BudgetRule {
 
 func (l *Limiter) resolveRateRule(keys DimensionKeys) *RateLimitRule {
 	if l.ratesByKey != nil {
-		if r, ok := l.ratesByKey[keys.Team]; ok {
-			return r
+		// Specific team rate rule
+		if keys.Team != "" {
+			if r, ok := l.ratesByKey["team:"+keys.Team]; ok {
+				return r
+			}
+			if r, ok := l.ratesByKey[keys.Team]; ok {
+				return r
+			}
 		}
-		if r, ok := l.ratesByKey[keys.Identity]; ok {
-			return r
+		// Specific identity rate rule
+		if keys.Identity != "" {
+			if r, ok := l.ratesByKey["identity:"+keys.Identity]; ok {
+				return r
+			}
+			if r, ok := l.ratesByKey[keys.Identity]; ok {
+				return r
+			}
 		}
-		if r, ok := l.ratesByKey[keys.Route]; ok {
-			return r
+		// Specific route rate rule
+		if keys.Route != "" {
+			if r, ok := l.ratesByKey["route:"+keys.Route]; ok {
+				return r
+			}
+			if r, ok := l.ratesByKey[keys.Route]; ok {
+				return r
+			}
 		}
 	}
 	return l.defaultRate
@@ -227,13 +270,24 @@ func (l *Limiter) staleReservationCleaner() {
 			return
 		case <-ticker.C:
 			now := time.Now()
-			l.mu.Lock()
+			var expiredIDs []string
+			l.mu.RLock()
 			for id, r := range l.reservations {
 				if now.Sub(r.CreatedAt) > l.reservationTTL {
-					delete(l.reservations, id)
+					expiredIDs = append(expiredIDs, id)
 				}
 			}
-			l.mu.Unlock()
+			l.mu.RUnlock()
+
+			if len(expiredIDs) > 0 {
+				l.mu.Lock()
+				for _, id := range expiredIDs {
+					if r, ok := l.reservations[id]; ok && now.Sub(r.CreatedAt) > l.reservationTTL {
+						delete(l.reservations, id)
+					}
+				}
+				l.mu.Unlock()
+			}
 		}
 	}
 }

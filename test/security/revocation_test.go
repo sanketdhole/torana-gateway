@@ -3,6 +3,7 @@ package security_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	controlplanev1 "github.com/phaselume/torana/api/proto/controlplane/v1"
 	"github.com/phaselume/torana/internal/security/authn"
@@ -45,6 +46,44 @@ func TestRevocationList_ApplyFromProtoMessage(t *testing.T) {
 	}
 	if revList.IsRevoked("random-clean-id") {
 		t.Errorf("expected IsRevoked(random-clean-id) == false")
+	}
+}
+
+func TestRevocationList_TTLExpirationAndPruning(t *testing.T) {
+	revList := authn.NewRevocationList()
+
+	// Revoke a token with expiry in the past
+	revList.RevokeTokenWithExpiry("expired-tok", time.Now().Add(-10*time.Minute))
+	// Revoke a key with expiry in the future
+	revList.RevokeKeyWithExpiry("active-key", time.Now().Add(10*time.Minute))
+	// Revoke token with no expiry (indefinite)
+	revList.RevokeToken("indefinite-tok")
+
+	// Expired token should not be considered revoked
+	if revList.IsTokenRevoked("expired-tok") {
+		t.Errorf("expected expired-tok NOT to be revoked")
+	}
+	if revList.IsRevoked("expired-tok") {
+		t.Errorf("expected IsRevoked(expired-tok) to be false")
+	}
+
+	// Active key should be considered revoked
+	if !revList.IsKeyRevoked("active-key") {
+		t.Errorf("expected active-key to be revoked")
+	}
+	if !revList.IsTokenRevoked("indefinite-tok") {
+		t.Errorf("expected indefinite-tok to be revoked")
+	}
+
+	// Prune should remove expired-tok from internal map
+	pruned := revList.Prune(time.Now())
+	if pruned != 1 {
+		t.Errorf("expected 1 entry pruned, got %d", pruned)
+	}
+
+	tokCount, keyCount := revList.Count()
+	if tokCount != 1 || keyCount != 1 {
+		t.Errorf("expected 1 token and 1 key remaining, got %d tokens, %d keys", tokCount, keyCount)
 	}
 }
 

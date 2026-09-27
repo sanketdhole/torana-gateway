@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phaselume/torana/internal/config"
@@ -255,29 +257,40 @@ func (h *Handler) handleBatchRequest(
 		return
 	}
 
-	responses := make([]*JSONRPCResponse, 0, len(batch))
-	for _, req := range batch {
+	responses := make([]*JSONRPCResponse, len(batch))
+	var wg sync.WaitGroup
+
+	for i, req := range batch {
 		if req.Method == "tools/call" {
 			var toolParams ToolCallParams
 			_ = json.Unmarshal(req.Params, &toolParams)
 			if !h.authorizeTool(r.Context(), env, toolParams.Name, "call") {
-				responses = append(responses, NewErrorResponse(req.ID, CodeUnauthorized, fmt.Sprintf("unauthorized: access to tool %q denied by policy", toolParams.Name), nil))
+				responses[i] = NewErrorResponse(req.ID, CodeUnauthorized, fmt.Sprintf("unauthorized: access to tool %q denied by policy", toolParams.Name), nil)
 				continue
 			}
 		}
 
-		singleBytes, _ := json.Marshal(req)
-		respBody, _, err := h.egressMCP.SendJSONRPC(r.Context(), cluster, r.URL.Path, singleBytes, sess.UpstreamSessionID, r.Header)
-		if err != nil {
-			responses = append(responses, NewErrorResponse(req.ID, CodeInternalError, err.Error(), nil))
-			continue
-		}
+		wg.Add(1)
+		go func(idx int, rItem JSONRPCRequest) {
+			defer wg.Done()
 
-		var singleResp JSONRPCResponse
-		if err := json.Unmarshal(respBody, &singleResp); err == nil {
-			responses = append(responses, &singleResp)
-		}
+			singleBytes, _ := json.Marshal(rItem)
+			respBody, _, err := h.egressMCP.SendJSONRPC(r.Context(), cluster, r.URL.Path, singleBytes, sess.UpstreamSessionID, r.Header)
+			if err != nil {
+				responses[idx] = NewErrorResponse(rItem.ID, CodeInternalError, err.Error(), nil)
+				return
+			}
+
+			var singleResp JSONRPCResponse
+			if err := json.Unmarshal(respBody, &singleResp); err == nil {
+				responses[idx] = &singleResp
+			} else {
+				responses[idx] = NewErrorResponse(rItem.ID, CodeInternalError, "failed to decode upstream response", nil)
+			}
+		}(i, req)
 	}
+
+	wg.Wait()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Mcp-Session-Id", sess.ClientSessionID)
@@ -331,5 +344,5 @@ func (h *Handler) writeRawResponse(w http.ResponseWriter, body []byte, clientSes
 }
 
 func bytesTrim(b []byte) []byte {
-	return []byte(strings.TrimSpace(string(b)))
+	return bytes.TrimSpace(b)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -59,12 +60,29 @@ func (d DimensionKeys) BuildKey(prefix string, window Window, bucketTime time.Ti
 		bucketKey = bucketTime.UTC().Format("2006-01")
 	}
 
+	team := d.Team
+	if team == "" {
+		team = "_any_team_"
+	}
+	ident := d.Identity
+	if ident == "" {
+		ident = "_anon_ident_"
+	}
+	route := d.Route
+	if route == "" {
+		route = "_any_route_"
+	}
+	model := d.Model
+	if model == "" {
+		model = "_any_model_"
+	}
+
 	return fmt.Sprintf("limits:%s:%s:%s:%s:%s:%s:%s",
 		prefix,
-		sanitizeKeyPart(d.Team),
-		sanitizeKeyPart(d.Identity),
-		sanitizeKeyPart(d.Route),
-		sanitizeKeyPart(d.Model),
+		sanitizeKeyPart(team),
+		sanitizeKeyPart(ident),
+		sanitizeKeyPart(route),
+		sanitizeKeyPart(model),
 		string(window),
 		bucketKey,
 	)
@@ -72,18 +90,31 @@ func (d DimensionKeys) BuildKey(prefix string, window Window, bucketTime time.Ti
 
 // RateLimitKey constructs a key for request-rate limiting.
 func (d DimensionKeys) RateLimitKey() string {
+	team := d.Team
+	if team == "" {
+		team = "_any_team_"
+	}
+	ident := d.Identity
+	if ident == "" {
+		ident = "_anon_ident_"
+	}
+	route := d.Route
+	if route == "" {
+		route = "_any_route_"
+	}
+
 	return fmt.Sprintf("limits:rps:%s:%s:%s",
-		sanitizeKeyPart(d.Team),
-		sanitizeKeyPart(d.Identity),
-		sanitizeKeyPart(d.Route),
+		sanitizeKeyPart(team),
+		sanitizeKeyPart(ident),
+		sanitizeKeyPart(route),
 	)
 }
 
 func sanitizeKeyPart(part string) string {
 	if part == "" {
-		return "*"
+		return "_none_"
 	}
-	return part
+	return strings.ReplaceAll(part, ":", "_")
 }
 
 // BudgetRule configures token limits across time windows.
