@@ -1,88 +1,163 @@
 const API_BASE = '/api';
 
-export async function fetchStatus() {
-  const res = await fetch(`${API_BASE}/status`);
-  if (!res.ok) throw new Error('Failed to fetch status');
+function getAuthHeader() {
+  const token = localStorage.getItem('torana_auth_token');
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  return {};
+}
+
+async function request(url, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeader(),
+    ...(options.headers || {}),
+  };
+
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    // If unauthorized, clear token and notify
+    localStorage.removeItem('torana_auth_token');
+    window.dispatchEvent(new CustomEvent('torana_unauthorized'));
+    const err = await res.json().catch(() => ({ error: 'Unauthorized' }));
+    throw new Error(err.error || 'Authentication required');
+  }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `Request failed with status ${res.status}` }));
+    throw new Error(err.error || 'Request failed');
+  }
+
   return res.json();
+}
+
+// Authentication APIs
+export async function login(username, passwordOrToken) {
+  const data = await request(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    body: JSON.stringify({
+      username: username || 'admin',
+      password: passwordOrToken,
+      token: passwordOrToken,
+    }),
+  });
+
+  if (data.token) {
+    localStorage.setItem('torana_auth_token', data.token);
+  }
+  return data;
+}
+
+export async function logout() {
+  try {
+    await request(`${API_BASE}/auth/logout`, { method: 'POST' });
+  } finally {
+    localStorage.removeItem('torana_auth_token');
+  }
+}
+
+export async function fetchMe() {
+  return request(`${API_BASE}/auth/me`);
+}
+
+// Core Config and State APIs
+export async function fetchStatus() {
+  return request(`${API_BASE}/status`);
 }
 
 export async function fetchNodes() {
-  const res = await fetch(`${API_BASE}/nodes`);
-  if (!res.ok) throw new Error('Failed to fetch nodes');
-  return res.json();
+  return request(`${API_BASE}/nodes`);
 }
 
 export async function fetchConfig() {
-  const res = await fetch(`${API_BASE}/config`);
-  if (!res.ok) throw new Error('Failed to fetch config');
-  return res.json();
+  return request(`${API_BASE}/config`);
 }
 
 export async function fetchConfigHistory() {
-  const res = await fetch(`${API_BASE}/config/history`);
-  if (!res.ok) throw new Error('Failed to fetch config history');
-  return res.json();
+  return request(`${API_BASE}/config/history`);
 }
 
 export async function publishConfig(schema, comment) {
-  const res = await fetch(`${API_BASE}/config/publish`, {
+  return request(`${API_BASE}/config/publish`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ schema, comment }),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Publish failed' }));
-    throw new Error(err.error || 'Publish failed');
-  }
-  return res.json();
 }
 
 export async function rollbackConfig(targetVersion) {
-  const res = await fetch(`${API_BASE}/config/rollback`, {
+  return request(`${API_BASE}/config/rollback`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target_version: targetVersion }),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Rollback failed' }));
-    throw new Error(err.error || 'Rollback failed');
-  }
-  return res.json();
 }
 
+// Fine-grained Route CRUD
+export async function upsertRoute(route) {
+  return request(`${API_BASE}/config/routes`, {
+    method: 'POST',
+    body: JSON.stringify(route),
+  });
+}
+
+export async function deleteRoute(routeId) {
+  return request(`${API_BASE}/config/routes?id=${encodeURIComponent(routeId)}`, {
+    method: 'DELETE',
+  });
+}
+
+// Fine-grained Policy CRUD
+export async function upsertPolicy(policy) {
+  return request(`${API_BASE}/config/policies`, {
+    method: 'POST',
+    body: JSON.stringify(policy),
+  });
+}
+
+export async function deletePolicy(policyId) {
+  return request(`${API_BASE}/config/policies?id=${encodeURIComponent(policyId)}`, {
+    method: 'DELETE',
+  });
+}
+
+// Fine-grained Upstream CRUD
+export async function upsertUpstream(upstream) {
+  return request(`${API_BASE}/config/upstreams`, {
+    method: 'POST',
+    body: JSON.stringify(upstream),
+  });
+}
+
+export async function deleteUpstream(upstreamId) {
+  return request(`${API_BASE}/config/upstreams?id=${encodeURIComponent(upstreamId)}`, {
+    method: 'DELETE',
+  });
+}
+
+// Revocations & Telemetry
 export async function fetchRevocations() {
-  const res = await fetch(`${API_BASE}/revocations`);
-  if (!res.ok) throw new Error('Failed to fetch revocations');
-  return res.json();
+  return request(`${API_BASE}/revocations`);
 }
 
 export async function addRevocation(keys, tokens, reason) {
-  const res = await fetch(`${API_BASE}/revocations`, {
+  return request(`${API_BASE}/revocations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ keys, tokens, reason }),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Revocation failed' }));
-    throw new Error(err.error || 'Revocation failed');
-  }
-  return res.json();
 }
 
 export async function fetchUsage() {
-  const res = await fetch(`${API_BASE}/usage`);
-  if (!res.ok) throw new Error('Failed to fetch usage');
-  return res.json();
+  return request(`${API_BASE}/usage`);
 }
 
 export async function fetchAuditLogs(limit = 100) {
-  const res = await fetch(`${API_BASE}/audit?limit=${limit}`);
-  if (!res.ok) throw new Error('Failed to fetch audit logs');
-  return res.json();
+  return request(`${API_BASE}/audit?limit=${limit}`);
 }
 
 export function subscribeToEvents(onMessage, onError) {
-  const es = new EventSource(`${API_BASE}/events`);
+  const token = localStorage.getItem('torana_auth_token');
+  const url = token ? `${API_BASE}/events?token=${encodeURIComponent(token)}` : `${API_BASE}/events`;
+  const es = new EventSource(url);
   es.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);

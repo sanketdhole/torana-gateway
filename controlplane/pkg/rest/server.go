@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	controlplanev1 "github.com/phaselume/torana/api/proto/controlplane/v1"
 	"github.com/phaselume/torana/controlplane/pkg/auth"
 	"github.com/phaselume/torana/controlplane/pkg/crypto"
 	"github.com/phaselume/torana/controlplane/pkg/fleet"
@@ -74,21 +75,35 @@ func NewServer(
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	// Authentication Endpoints
+	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/auth/me", s.handleAuthMe)
+
 	// REST API Endpoints
 	mux.HandleFunc("GET /api/status", s.handleGetStatus)
 	mux.HandleFunc("GET /api/nodes", s.handleGetNodes)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("GET /api/config/history", s.handleGetConfigHistory)
+
+	// Direct CRUD Endpoints
+	mux.HandleFunc("POST /api/config/routes", s.handleUpsertRoute)
+	mux.HandleFunc("DELETE /api/config/routes", s.handleDeleteRoute)
+	mux.HandleFunc("POST /api/config/policies", s.handleUpsertPolicy)
+	mux.HandleFunc("DELETE /api/config/policies", s.handleDeletePolicy)
+	mux.HandleFunc("POST /api/config/upstreams", s.handleUpsertUpstream)
+	mux.HandleFunc("DELETE /api/config/upstreams", s.handleDeleteUpstream)
+
+	// Snapshot Publisher & Rollback
 	mux.HandleFunc("POST /api/config/publish", s.handlePublishConfig)
 	mux.HandleFunc("POST /api/config/rollback", s.handleRollbackConfig)
+
+	// Revocation & Telemetry
 	mux.HandleFunc("GET /api/revocations", s.handleGetRevocations)
 	mux.HandleFunc("POST /api/revocations", s.handleAddRevocation)
 	mux.HandleFunc("GET /api/usage", s.handleGetUsage)
 	mux.HandleFunc("GET /api/audit", s.handleGetAudit)
 	mux.HandleFunc("GET /api/events", s.handleSSE)
-
-	// Auth login check / verify endpoint
-	mux.HandleFunc("POST /api/auth/verify", s.handleAuthVerify)
 
 	// React Static / SPA Handler
 	mux.HandleFunc("/", s.handleStaticOrSPA)
@@ -124,7 +139,86 @@ func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 	s.writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func (s *Server) handleGetStatus(w http.ResponseWriter, _ *http.Request) {
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Token    string `json:"token"`
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid login json payload")
+		return
+	}
+
+	secret := req.Password
+	if secret == "" {
+		secret = req.Token
+	}
+
+	sess, err := s.auth.Login(req.Username, secret, r.RemoteAddr)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "invalid username, password, or admin token")
+		return
+	}
+
+	// Set secure HTTP session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "torana_session",
+		Value:    sess.Token,
+		Path:     "/",
+		Expires:  sess.ExpiresAt,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"token":      sess.Token,
+		"username":   sess.Username,
+		"role":       sess.Role,
+		"expires_at": sess.ExpiresAt,
+	})
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	var token string
+	if authHdr := r.Header.Get("Authorization"); strings.HasPrefix(authHdr, "Bearer ") {
+		token = strings.TrimPrefix(authHdr, "Bearer ")
+	} else if c, err := r.Cookie("torana_session"); err == nil {
+		token = c.Value
+	}
+
+	if token != "" {
+		s.auth.Logout(token)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "torana_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+
+	s.writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
+}
+
+func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"username":      actor,
+		"role":          role,
+	})
+}
+
+func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	stats := s.fleet.GetFleetStats()
 	snap := s.state.CurrentSnapshot()
 
@@ -136,19 +230,19 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"service":            "torana-controlplane",
-		"status":             "OPERATIONAL",
-		"public_key_hex":     s.signer.PublicKeyHex(),
-		"config_version":     s.state.ConfigVersion(),
-		"routes_count":       routeCount,
-		"upstreams_count":    upstreamCount,
-		"policies_count":     policyCount,
-		"fleet_stats":        stats,
-		"timestamp":          time.Now().UTC(),
+		"service":         "torana-controlplane",
+		"status":          "OPERATIONAL",
+		"public_key_hex":  s.signer.PublicKeyHex(),
+		"config_version":  s.state.ConfigVersion(),
+		"routes_count":    routeCount,
+		"upstreams_count": upstreamCount,
+		"policies_count":  policyCount,
+		"fleet_stats":     stats,
+		"timestamp":       time.Now().UTC(),
 	})
 }
 
-func (s *Server) handleGetNodes(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetNodes(w http.ResponseWriter, r *http.Request) {
 	nodes := s.fleet.GetNodes()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"nodes": nodes,
@@ -156,15 +250,237 @@ func (s *Server) handleGetNodes(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	schema := s.state.GetSchema()
 	s.writeJSON(w, http.StatusOK, schema)
 }
 
-func (s *Server) handleGetConfigHistory(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetConfigHistory(w http.ResponseWriter, r *http.Request) {
 	history := s.state.GetHistory()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"history": history,
+	})
+}
+
+// handleUpsertRoute creates or updates a route and publishes snapshot
+func (s *Server) handleUpsertRoute(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
+		return
+	}
+
+	var route controlplanev1.Route
+	if err := json.NewDecoder(r.Body).Decode(&route); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid route payload: "+err.Error())
+		return
+	}
+	if route.Id == "" || route.Path == "" {
+		s.writeError(w, http.StatusBadRequest, "route id and path are required")
+		return
+	}
+
+	snap, err := s.state.UpsertRoute(&route, actor)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	pushed := s.fleet.BroadcastSnapshot(snap)
+	s.auth.RecordAudit(actor, string(role), "UPSERT_ROUTE", route.Id, "SUCCESS", fmt.Sprintf("Path: %s, Upstream: %s", route.Path, route.UpstreamId), r.RemoteAddr)
+	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "route updated and broadcast to fleet",
+		"config_version": snap.ConfigVersion,
+		"nodes_notified": pushed,
+		"route":          route,
+	})
+}
+
+// handleDeleteRoute deletes a route by id
+func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
+		return
+	}
+
+	routeID := r.URL.Query().Get("id")
+	if routeID == "" {
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		routeID = req.ID
+	}
+	if routeID == "" {
+		s.writeError(w, http.StatusBadRequest, "id parameter required")
+		return
+	}
+
+	snap, err := s.state.DeleteRoute(routeID, actor)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	pushed := s.fleet.BroadcastSnapshot(snap)
+	s.auth.RecordAudit(actor, string(role), "DELETE_ROUTE", routeID, "SUCCESS", "Route removed", r.RemoteAddr)
+	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "route deleted and broadcast to fleet",
+		"config_version": snap.ConfigVersion,
+		"nodes_notified": pushed,
+	})
+}
+
+// handleUpsertPolicy creates or updates a CEL policy
+func (s *Server) handleUpsertPolicy(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
+		return
+	}
+
+	var policy controlplanev1.Policy
+	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid policy payload: "+err.Error())
+		return
+	}
+	if policy.Id == "" {
+		s.writeError(w, http.StatusBadRequest, "policy id is required")
+		return
+	}
+
+	snap, err := s.state.UpsertPolicy(&policy, actor)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	pushed := s.fleet.BroadcastSnapshot(snap)
+	s.auth.RecordAudit(actor, string(role), "UPSERT_POLICY", policy.Id, "SUCCESS", fmt.Sprintf("Type: %s, Action: %s", policy.Type, policy.Action), r.RemoteAddr)
+	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "policy updated and broadcast to fleet",
+		"config_version": snap.ConfigVersion,
+		"nodes_notified": pushed,
+		"policy":         policy,
+	})
+}
+
+// handleDeletePolicy removes a policy by ID
+func (s *Server) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
+		return
+	}
+
+	policyID := r.URL.Query().Get("id")
+	if policyID == "" {
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		policyID = req.ID
+	}
+	if policyID == "" {
+		s.writeError(w, http.StatusBadRequest, "id parameter required")
+		return
+	}
+
+	snap, err := s.state.DeletePolicy(policyID, actor)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	pushed := s.fleet.BroadcastSnapshot(snap)
+	s.auth.RecordAudit(actor, string(role), "DELETE_POLICY", policyID, "SUCCESS", "Policy removed", r.RemoteAddr)
+	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "policy deleted and broadcast to fleet",
+		"config_version": snap.ConfigVersion,
+		"nodes_notified": pushed,
+	})
+}
+
+// handleUpsertUpstream creates or updates an upstream cluster
+func (s *Server) handleUpsertUpstream(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
+		return
+	}
+
+	var upstream controlplanev1.Upstream
+	if err := json.NewDecoder(r.Body).Decode(&upstream); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid upstream payload: "+err.Error())
+		return
+	}
+	if upstream.Id == "" {
+		s.writeError(w, http.StatusBadRequest, "upstream id is required")
+		return
+	}
+
+	snap, err := s.state.UpsertUpstream(&upstream, actor)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	pushed := s.fleet.BroadcastSnapshot(snap)
+	s.auth.RecordAudit(actor, string(role), "UPSERT_UPSTREAM", upstream.Id, "SUCCESS", fmt.Sprintf("Protocol: %s, Endpoints: %d", upstream.Protocol, len(upstream.Endpoints)), r.RemoteAddr)
+	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "upstream updated and broadcast to fleet",
+		"config_version": snap.ConfigVersion,
+		"nodes_notified": pushed,
+		"upstream":       upstream,
+	})
+}
+
+// handleDeleteUpstream removes an upstream by ID
+func (s *Server) handleDeleteUpstream(w http.ResponseWriter, r *http.Request) {
+	role, actor, err := s.auth.AuthenticateRequest(r)
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
+		return
+	}
+
+	upstreamID := r.URL.Query().Get("id")
+	if upstreamID == "" {
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		upstreamID = req.ID
+	}
+	if upstreamID == "" {
+		s.writeError(w, http.StatusBadRequest, "id parameter required")
+		return
+	}
+
+	snap, err := s.state.DeleteUpstream(upstreamID, actor)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	pushed := s.fleet.BroadcastSnapshot(snap)
+	s.auth.RecordAudit(actor, string(role), "DELETE_UPSTREAM", upstreamID, "SUCCESS", "Upstream removed", r.RemoteAddr)
+	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "upstream deleted and broadcast to fleet",
+		"config_version": snap.ConfigVersion,
+		"nodes_notified": pushed,
 	})
 }
 
@@ -175,8 +491,8 @@ type publishRequest struct {
 
 func (s *Server) handlePublishConfig(w http.ResponseWriter, r *http.Request) {
 	role, actor, err := s.auth.AuthenticateRequest(r)
-	if err != nil || role != auth.RoleAdmin {
-		s.writeError(w, http.StatusForbidden, "requires admin role")
+	if err != nil || (role != auth.RoleAdmin && role != auth.RoleOperator) {
+		s.writeError(w, http.StatusForbidden, "requires admin or operator role")
 		return
 	}
 
@@ -202,7 +518,6 @@ func (s *Server) handlePublishConfig(w http.ResponseWriter, r *http.Request) {
 	pushed := s.fleet.BroadcastSnapshot(snap)
 
 	s.auth.RecordAudit(actor, string(role), "PUBLISH_CONFIG", fmt.Sprintf("v%d", snap.ConfigVersion), "SUCCESS", fmt.Sprintf("Pushed to %d nodes. Comment: %s", pushed, req.Comment), r.RemoteAddr)
-
 	s.broadcastSSE(fmt.Sprintf(`{"type":"config_published","version":%d,"nodes_notified":%d}`, snap.ConfigVersion, pushed))
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -238,7 +553,6 @@ func (s *Server) handleRollbackConfig(w http.ResponseWriter, r *http.Request) {
 
 	pushed := s.fleet.BroadcastSnapshot(snap)
 	s.auth.RecordAudit(actor, string(role), "ROLLBACK_CONFIG", fmt.Sprintf("v%d->v%d", req.TargetVersion, snap.ConfigVersion), "SUCCESS", fmt.Sprintf("Restored snapshot version %d", req.TargetVersion), r.RemoteAddr)
-
 	s.broadcastSSE(fmt.Sprintf(`{"type":"config_rollback","restored_version":%d,"new_version":%d}`, req.TargetVersion, snap.ConfigVersion))
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -248,7 +562,7 @@ func (s *Server) handleRollbackConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleGetRevocations(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetRevocations(w http.ResponseWriter, r *http.Request) {
 	keys, tokens := s.state.GetRevocations()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"revoked_keys":   keys,
@@ -279,7 +593,6 @@ func (s *Server) handleAddRevocation(w http.ResponseWriter, r *http.Request) {
 	pushed := s.fleet.BroadcastRevocation(rev)
 
 	s.auth.RecordAudit(actor, string(role), "REVOKE_CREDENTIALS", fmt.Sprintf("keys:%d,tokens:%d", len(req.Keys), len(req.Tokens)), "SUCCESS", req.Reason, r.RemoteAddr)
-
 	s.broadcastSSE(fmt.Sprintf(`{"type":"revocation_issued","keys_count":%d,"tokens_count":%d,"nodes_notified":%d}`, len(req.Keys), len(req.Tokens), pushed))
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -288,7 +601,7 @@ func (s *Server) handleAddRevocation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleGetUsage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 	usage := s.fleet.GetUsageSummary()
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"usage_records": usage,
@@ -306,19 +619,6 @@ func (s *Server) handleGetAudit(w http.ResponseWriter, r *http.Request) {
 	logs := s.auth.GetAuditLogs(limit)
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"audit_logs": logs,
-	})
-}
-
-func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
-	role, actor, err := s.auth.AuthenticateRequest(r)
-	if err != nil {
-		s.writeError(w, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"authenticated": true,
-		"actor":         actor,
-		"role":          role,
 	})
 }
 

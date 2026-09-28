@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
+import LoginModal from './components/LoginModal';
 import FleetView from './components/FleetView';
 import ConfigStudio from './components/ConfigStudio';
 import RolloutPublisher from './components/RolloutPublisher';
@@ -7,22 +8,33 @@ import RevocationManager from './components/RevocationManager';
 import TelemetryView from './components/TelemetryView';
 import AuditLogView from './components/AuditLogView';
 import {
+  fetchMe,
+  logout,
   fetchStatus,
   fetchNodes,
   fetchConfig,
   fetchConfigHistory,
   publishConfig,
   rollbackConfig,
+  upsertRoute,
+  deleteRoute,
+  upsertPolicy,
+  deletePolicy,
+  upsertUpstream,
+  deleteUpstream,
   fetchRevocations,
   addRevocation,
   fetchUsage,
   fetchAuditLogs,
   subscribeToEvents,
 } from './api';
-import { Server, Sliders, Send, ShieldAlert, BarChart3, FileText } from 'lucide-react';
+import { Server, Sliders, Send, ShieldAlert, BarChart3, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [activeTab, setActiveTab] = useState('fleet');
+
   const [status, setStatus] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [config, setConfig] = useState(null);
@@ -36,8 +48,15 @@ export default function App() {
   const [isPublishing, setIsPublishing] = useState(false);
   const [isRevoking, setIsRevoking] = useState(false);
   const [lastPublishResult, setLastPublishResult] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   const loadAllData = useCallback(async () => {
+    if (!isAuthenticated) return;
     setIsRefreshing(true);
     try {
       const [st, nds, cfg, hist, revs, usg, aud] = await Promise.all([
@@ -62,16 +81,44 @@ export default function App() {
     } finally {
       setIsRefreshing(false);
     }
+  }, [isAuthenticated]);
+
+  // Check login state on initial load
+  useEffect(() => {
+    fetchMe()
+      .then((u) => {
+        setUser(u);
+        setIsAuthenticated(true);
+      })
+      .catch(() => {
+        setIsAuthenticated(false);
+        setUser(null);
+      });
+
+    const handleUnauthorized = () => {
+      setIsAuthenticated(false);
+      setUser(null);
+    };
+
+    window.addEventListener('torana_unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('torana_unauthorized', handleUnauthorized);
   }, []);
 
+  // SSE subscription & periodic polling when authenticated
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     loadAllData();
 
-    // Subscribe to SSE
     const unsubscribe = subscribeToEvents(
       (data) => {
         setSseConnected(true);
-        if (data.type === 'node_enrolled' || data.type === 'node_ack' || data.type === 'node_nack' || data.type === 'node_hello') {
+        if (
+          data.type === 'node_enrolled' ||
+          data.type === 'node_ack' ||
+          data.type === 'node_nack' ||
+          data.type === 'node_hello'
+        ) {
           setNodes((prev) => {
             const idx = prev.findIndex((n) => n.node_id === data.node.node_id);
             if (idx >= 0) {
@@ -90,24 +137,101 @@ export default function App() {
       () => setSseConnected(false)
     );
 
-    // Periodic poll fallback every 5s
     const interval = setInterval(loadAllData, 5000);
 
     return () => {
       unsubscribe();
       clearInterval(interval);
     };
-  }, [loadAllData]);
+  }, [isAuthenticated, loadAllData]);
 
+  const handleLoginSuccess = (userData) => {
+    setUser(userData);
+    setIsAuthenticated(true);
+    showToast(`Welcome back, ${userData.username || 'admin'}!`, 'success');
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setUser(null);
+    setIsAuthenticated(false);
+    showToast('Logged out of control plane session', 'neutral');
+  };
+
+  // Fine-grained route handlers
+  const handleSaveRoute = async (route) => {
+    try {
+      const res = await upsertRoute(route);
+      showToast(`Route '${route.id}' saved and broadcast as v${res.config_version}!`, 'success');
+      await loadAllData();
+    } catch (err) {
+      showToast(`Failed to update route: ${err.message}`, 'error');
+    }
+  };
+
+  const handleDeleteRoute = async (routeId) => {
+    try {
+      const res = await deleteRoute(routeId);
+      showToast(`Route '${routeId}' deleted and broadcast as v${res.config_version}!`, 'success');
+      await loadAllData();
+    } catch (err) {
+      showToast(`Failed to delete route: ${err.message}`, 'error');
+    }
+  };
+
+  // Fine-grained policy handlers
+  const handleSavePolicy = async (policy) => {
+    try {
+      const res = await upsertPolicy(policy);
+      showToast(`Policy '${policy.name || policy.id}' saved and broadcast as v${res.config_version}!`, 'success');
+      await loadAllData();
+    } catch (err) {
+      showToast(`Failed to update policy: ${err.message}`, 'error');
+    }
+  };
+
+  const handleDeletePolicy = async (policyId) => {
+    try {
+      const res = await deletePolicy(policyId);
+      showToast(`Policy '${policyId}' deleted and broadcast as v${res.config_version}!`, 'success');
+      await loadAllData();
+    } catch (err) {
+      showToast(`Failed to delete policy: ${err.message}`, 'error');
+    }
+  };
+
+  // Fine-grained upstream handlers
+  const handleSaveUpstream = async (upstream) => {
+    try {
+      const res = await upsertUpstream(upstream);
+      showToast(`Upstream cluster '${upstream.id}' saved and broadcast as v${res.config_version}!`, 'success');
+      await loadAllData();
+    } catch (err) {
+      showToast(`Failed to update upstream: ${err.message}`, 'error');
+    }
+  };
+
+  const handleDeleteUpstream = async (upstreamId) => {
+    try {
+      const res = await deleteUpstream(upstreamId);
+      showToast(`Upstream cluster '${upstreamId}' deleted and broadcast as v${res.config_version}!`, 'success');
+      await loadAllData();
+    } catch (err) {
+      showToast(`Failed to delete upstream: ${err.message}`, 'error');
+    }
+  };
+
+  // Full snapshot publish & rollback
   const handlePublish = async (comment) => {
     if (!config) return;
     setIsPublishing(true);
     try {
       const res = await publishConfig(config, comment);
       setLastPublishResult(res);
+      showToast(`Published v${res.config_version} signed with Ed25519 to ${res.nodes_notified} node streams!`, 'success');
       await loadAllData();
     } catch (err) {
-      alert(`Publish failed: ${err.message}`);
+      showToast(`Publish failed: ${err.message}`, 'error');
     } finally {
       setIsPublishing(false);
     }
@@ -115,23 +239,25 @@ export default function App() {
 
   const handleRollback = async (version) => {
     try {
-      await rollbackConfig(version);
+      const res = await rollbackConfig(version);
+      showToast(`Rolled back to snapshot v${version}, new active version is v${res.config_version}!`, 'success');
       await loadAllData();
     } catch (err) {
-      alert(`Rollback failed: ${err.message}`);
+      showToast(`Rollback failed: ${err.message}`, 'error');
     }
   };
 
   const handleAddRevocation = async (keys, tokens, reason) => {
     setIsRevoking(true);
     try {
-      await addRevocation(keys, tokens, reason);
+      const res = await addRevocation(keys, tokens, reason);
+      showToast(`Broadcasted revocation to ${res.nodes_notified} nodes!`, 'success');
       const updated = await fetchRevocations();
       setRevocations(updated);
       const aud = await fetchAuditLogs();
       setAuditLogs(aud.audit_logs || []);
     } catch (err) {
-      alert(`Revocation failed: ${err.message}`);
+      showToast(`Revocation failed: ${err.message}`, 'error');
     } finally {
       setIsRevoking(false);
     }
@@ -147,13 +273,27 @@ export default function App() {
     total_memory_bytes: nodes.reduce((a, b) => a + (b.memory_allocated_bytes || 0), 0),
   };
 
+  if (!isAuthenticated) {
+    return <LoginModal onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="app-container">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`toast-notification toast-${toast.type}`}>
+          {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+          <span>{toast.message}</span>
+        </div>
+      )}
+
       <Header
         status={status}
+        user={user}
         onRefresh={loadAllData}
         isRefreshing={isRefreshing}
         sseConnected={sseConnected}
+        onLogout={handleLogout}
       />
 
       <nav className="nav-tabs">
@@ -207,8 +347,14 @@ export default function App() {
         {activeTab === 'studio' && (
           <ConfigStudio
             config={config}
-            onUpdateConfig={setConfig}
-            onNavigateToPublish={() => setActiveTab('rollout')}
+            onSaveRoute={handleSaveRoute}
+            onDeleteRoute={handleDeleteRoute}
+            onSavePolicy={handleSavePolicy}
+            onDeletePolicy={handleDeletePolicy}
+            onSaveUpstream={handleSaveUpstream}
+            onDeleteUpstream={handleDeleteUpstream}
+            onDirectDeploy={handlePublish}
+            isDeploying={isPublishing}
           />
         )}
 
@@ -232,13 +378,9 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'telemetry' && (
-          <TelemetryView usageRecords={usage} />
-        )}
+        {activeTab === 'telemetry' && <TelemetryView usageRecords={usage} />}
 
-        {activeTab === 'audit' && (
-          <AuditLogView logs={auditLogs} />
-        )}
+        {activeTab === 'audit' && <AuditLogView logs={auditLogs} />}
       </main>
     </div>
   );

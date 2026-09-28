@@ -246,6 +246,150 @@ func (s *Store) PublishNewConfig(schema ConfigSchema, author, comment string) (*
 	return s.currentSnap, nil
 }
 
+// UpsertRoute adds or updates a route, increments version, and signs the snapshot.
+func (s *Store) UpsertRoute(r *controlplanev1.Route, author string) (*controlplanev1.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	found := false
+	for i, existing := range s.schema.Routes {
+		if existing.Id == r.Id {
+			s.schema.Routes[i] = r
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.schema.Routes = append(s.schema.Routes, r)
+	}
+
+	newVer := s.configVersion.Add(1)
+	s.schema.Version = newVer
+	s.schema.UpdatedAt = time.Now().UTC()
+	s.buildAndSignSnapshot(fmt.Sprintf("Update route %s", r.Id))
+	_ = s.persistToFile()
+
+	return s.currentSnap, nil
+}
+
+// DeleteRoute removes a route by ID.
+func (s *Store) DeleteRoute(routeID string, author string) (*controlplanev1.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filtered := make([]*controlplanev1.Route, 0, len(s.schema.Routes))
+	for _, r := range s.schema.Routes {
+		if r.Id != routeID {
+			filtered = append(filtered, r)
+		}
+	}
+	s.schema.Routes = filtered
+
+	newVer := s.configVersion.Add(1)
+	s.schema.Version = newVer
+	s.schema.UpdatedAt = time.Now().UTC()
+	s.buildAndSignSnapshot(fmt.Sprintf("Delete route %s", routeID))
+	_ = s.persistToFile()
+
+	return s.currentSnap, nil
+}
+
+// UpsertPolicy adds or updates a policy, increments version, and signs the snapshot.
+func (s *Store) UpsertPolicy(p *controlplanev1.Policy, author string) (*controlplanev1.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	found := false
+	for i, existing := range s.schema.Policies {
+		if existing.Id == p.Id {
+			s.schema.Policies[i] = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.schema.Policies = append(s.schema.Policies, p)
+	}
+
+	newVer := s.configVersion.Add(1)
+	s.schema.Version = newVer
+	s.schema.UpdatedAt = time.Now().UTC()
+	s.buildAndSignSnapshot(fmt.Sprintf("Update policy %s (%s)", p.Name, p.Id))
+	_ = s.persistToFile()
+
+	return s.currentSnap, nil
+}
+
+// DeletePolicy removes a policy by ID.
+func (s *Store) DeletePolicy(policyID string, author string) (*controlplanev1.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filtered := make([]*controlplanev1.Policy, 0, len(s.schema.Policies))
+	for _, p := range s.schema.Policies {
+		if p.Id != policyID {
+			filtered = append(filtered, p)
+		}
+	}
+	s.schema.Policies = filtered
+
+	newVer := s.configVersion.Add(1)
+	s.schema.Version = newVer
+	s.schema.UpdatedAt = time.Now().UTC()
+	s.buildAndSignSnapshot(fmt.Sprintf("Delete policy %s", policyID))
+	_ = s.persistToFile()
+
+	return s.currentSnap, nil
+}
+
+// UpsertUpstream adds or updates an upstream cluster.
+func (s *Store) UpsertUpstream(u *controlplanev1.Upstream, author string) (*controlplanev1.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	found := false
+	for i, existing := range s.schema.Upstreams {
+		if existing.Id == u.Id {
+			s.schema.Upstreams[i] = u
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.schema.Upstreams = append(s.schema.Upstreams, u)
+	}
+
+	newVer := s.configVersion.Add(1)
+	s.schema.Version = newVer
+	s.schema.UpdatedAt = time.Now().UTC()
+	s.buildAndSignSnapshot(fmt.Sprintf("Update upstream %s", u.Id))
+	_ = s.persistToFile()
+
+	return s.currentSnap, nil
+}
+
+// DeleteUpstream removes an upstream by ID.
+func (s *Store) DeleteUpstream(upstreamID string, author string) (*controlplanev1.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filtered := make([]*controlplanev1.Upstream, 0, len(s.schema.Upstreams))
+	for _, u := range s.schema.Upstreams {
+		if u.Id != upstreamID {
+			filtered = append(filtered, u)
+		}
+	}
+	s.schema.Upstreams = filtered
+
+	newVer := s.configVersion.Add(1)
+	s.schema.Version = newVer
+	s.schema.UpdatedAt = time.Now().UTC()
+	s.buildAndSignSnapshot(fmt.Sprintf("Delete upstream %s", upstreamID))
+	_ = s.persistToFile()
+
+	return s.currentSnap, nil
+}
+
 // Rollback restores a previous snapshot version from history as a new monotonically incremented version.
 func (s *Store) Rollback(targetVersion uint64, author string) (*controlplanev1.Snapshot, error) {
 	s.mu.Lock()

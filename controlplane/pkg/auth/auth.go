@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,7 +12,7 @@ import (
 )
 
 var (
-	ErrUnauthorized = errors.New("unauthorized")
+	ErrUnauthorized = errors.New("unauthorized: missing or invalid credentials")
 	ErrForbidden    = errors.New("forbidden: insufficient permissions")
 )
 
@@ -21,6 +23,15 @@ const (
 	RoleOperator Role = "operator"
 	RoleViewer   Role = "viewer"
 )
+
+// Session stores an active authenticated session.
+type Session struct {
+	Token     string    `json:"token"`
+	Username  string    `json:"username"`
+	Role      Role      `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
 
 // AuditEvent records a security or operational event.
 type AuditEvent struct {
@@ -35,10 +46,11 @@ type AuditEvent struct {
 	ClientIP  string    `json:"client_ip,omitempty"`
 }
 
-// Manager handles API authentication, RBAC, enrollment tokens, and audit logging.
+// Manager handles API authentication, RBAC, session lifecycle, enrollment tokens, and audit logging.
 type Manager struct {
 	mu           sync.RWMutex
-	adminTokens  map[string]Role   // token -> role
+	adminTokens  map[string]Role   // static token -> role
+	sessions     map[string]*Session // sessionToken -> Session
 	enrollTokens map[string]string // token -> namespace
 	auditLogs    []AuditEvent
 	maxAuditLogs int
@@ -47,6 +59,7 @@ type Manager struct {
 func NewManager(defaultAdminToken, defaultEnrollToken string) *Manager {
 	m := &Manager{
 		adminTokens:  make(map[string]Role),
+		sessions:     make(map[string]*Session),
 		enrollTokens: make(map[string]string),
 		auditLogs:    make([]AuditEvent, 0, 500),
 		maxAuditLogs: 500,
@@ -67,19 +80,73 @@ func NewManager(defaultAdminToken, defaultEnrollToken string) *Manager {
 	return m
 }
 
+// Login verifies credentials and creates a new session.
+func (m *Manager) Login(username, secret string, clientIP string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Check against static admin tokens
+	role, tokenMatches := m.adminTokens[secret]
+	validUser := (username == "admin" || username == "operator" || username == "") && tokenMatches
+
+	// Also allow username "admin" with secret equal to any registered admin token
+	if !validUser {
+		for tok, r := range m.adminTokens {
+			if subtle.ConstantTimeCompare([]byte(tok), []byte(secret)) == 1 {
+				validUser = true
+				role = r
+				break
+			}
+		}
+	}
+
+	if !validUser {
+		m.recordAuditLocked("anonymous", "none", "LOGIN", "auth/login", "BLOCKED", "Invalid credentials attempted", clientIP)
+		return nil, ErrUnauthorized
+	}
+
+	if username == "" {
+		username = "admin"
+	}
+
+	// Generate secure session token
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, err
+	}
+	sessionToken := "sess_" + hex.EncodeToString(buf)
+
+	sess := &Session{
+		Token:     sessionToken,
+		Username:  username,
+		Role:      role,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+	}
+
+	m.sessions[sessionToken] = sess
+	m.recordAuditLocked(username, string(role), "LOGIN", "auth/login", "SUCCESS", "User logged in successfully", clientIP)
+	return sess, nil
+}
+
+// Logout invalidates a session token.
+func (m *Manager) Logout(sessionToken string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, sessionToken)
+}
+
 // ValidateEnrollToken verifies if the enrollment token is valid for a given namespace.
 func (m *Manager) ValidateEnrollToken(token, namespace string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// If empty token registry, allow in dev mode
 	if len(m.enrollTokens) == 0 {
 		return true
 	}
 
 	expectedNs, exists := m.enrollTokens[token]
 	if !exists {
-		// Also allow token if matched against any registered enroll token in dev
 		for tok := range m.enrollTokens {
 			if subtle.ConstantTimeCompare([]byte(tok), []byte(token)) == 1 {
 				return true
@@ -91,53 +158,67 @@ func (m *Manager) ValidateEnrollToken(token, namespace string) bool {
 	return expectedNs == "" || expectedNs == namespace || namespace == "default"
 }
 
-// AuthenticateRequest extracts and verifies bearer token from HTTP request.
+// AuthenticateRequest extracts and verifies session or bearer token from HTTP request.
 func (m *Manager) AuthenticateRequest(r *http.Request) (Role, string, error) {
-	authHeader := r.Header.Get("Authorization")
-	apiKeyHeader := r.Header.Get("X-API-Key")
-
 	var token string
+
+	// 1. Check Authorization Bearer header
+	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" {
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 			token = parts[1]
 		}
 	}
-	if token == "" && apiKeyHeader != "" {
-		token = apiKeyHeader
+
+	// 2. Check X-API-Key header
+	if token == "" {
+		token = r.Header.Get("X-API-Key")
 	}
 
-	// For local dev convenience, allow cookie or query param if provided
+	// 3. Check session cookie
 	if token == "" {
-		if c, err := r.Cookie("torana_token"); err == nil {
+		if c, err := r.Cookie("torana_session"); err == nil {
 			token = c.Value
 		}
 	}
+
+	// 4. Check query parameter
 	if token == "" {
 		token = r.URL.Query().Get("token")
 	}
 
-	// If no token provided, allow dev default with RoleAdmin for localhost UI
 	if token == "" {
-		return RoleAdmin, "admin@local", nil
-	}
-
-	m.mu.RLock()
-	role, exists := m.adminTokens[token]
-	m.mu.RUnlock()
-
-	if !exists {
 		return "", "", ErrUnauthorized
 	}
 
-	return role, "operator", nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Check active dynamic sessions
+	if sess, ok := m.sessions[token]; ok {
+		if time.Now().UTC().After(sess.ExpiresAt) {
+			return "", "", ErrUnauthorized
+		}
+		return sess.Role, sess.Username, nil
+	}
+
+	// Check static configured admin tokens
+	if role, ok := m.adminTokens[token]; ok {
+		return role, "admin@key", nil
+	}
+
+	return "", "", ErrUnauthorized
 }
 
 // RecordAudit logs an administrative event.
 func (m *Manager) RecordAudit(actor, role, action, resource, status, details, clientIP string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.recordAuditLocked(actor, role, action, resource, status, details, clientIP)
+}
 
+func (m *Manager) recordAuditLocked(actor, role, action, resource, status, details, clientIP string) {
 	event := AuditEvent{
 		ID:        time.Now().Format("20060102150405.000000"),
 		Timestamp: time.Now().UTC(),

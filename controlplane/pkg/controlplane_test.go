@@ -227,3 +227,71 @@ func TestFleetManagerAndGRPCStreaming(t *testing.T) {
 		t.Errorf("expected node in fleet with ACK status, got: %+v", nodes)
 	}
 }
+
+func TestAuthManagerAndSessions(t *testing.T) {
+	mgr := auth.NewManager("secret-admin-pass", "enroll-token-1")
+
+	// 1. Invalid login attempt
+	_, err := mgr.Login("admin", "wrong-password", "127.0.0.1")
+	if err == nil {
+		t.Errorf("expected error on invalid password")
+	}
+
+	// 2. Valid login attempt
+	sess, err := mgr.Login("admin", "secret-admin-pass", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	if sess.Role != auth.RoleAdmin || sess.Token == "" {
+		t.Errorf("unexpected session data: %+v", sess)
+	}
+
+	// 3. Logout
+	mgr.Logout(sess.Token)
+}
+
+func TestStateCRUDOperations(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	signer, _ := crypto.NewSigner("")
+	store, _ := state.NewStore("", signer, logger)
+
+	initialVer := store.ConfigVersion()
+
+	// 1. Upsert Route
+	snap, err := store.UpsertRoute(&controlplanev1.Route{
+		Id:         "route-custom-1",
+		Path:       "/v1/agent/run",
+		UpstreamId: "upstream-llm-primary",
+	}, "test-admin")
+	if err != nil {
+		t.Fatalf("UpsertRoute failed: %v", err)
+	}
+	if snap.ConfigVersion != initialVer+1 {
+		t.Errorf("expected config version %d, got %d", initialVer+1, snap.ConfigVersion)
+	}
+
+	// 2. Upsert Policy
+	snap, err = store.UpsertPolicy(&controlplanev1.Policy{
+		Id:            "policy-cel-custom",
+		Name:          "Custom Guardrail",
+		Type:          "cel",
+		CelExpression: "request.auth.tenant_id != ''",
+		Action:        "ALLOW",
+	}, "test-admin")
+	if err != nil {
+		t.Fatalf("UpsertPolicy failed: %v", err)
+	}
+	if snap.ConfigVersion != initialVer+2 {
+		t.Errorf("expected config version %d, got %d", initialVer+2, snap.ConfigVersion)
+	}
+
+	// 3. Delete Route
+	snap, err = store.DeleteRoute("route-custom-1", "test-admin")
+	if err != nil {
+		t.Fatalf("DeleteRoute failed: %v", err)
+	}
+	if snap.ConfigVersion != initialVer+3 {
+		t.Errorf("expected config version %d, got %d", initialVer+3, snap.ConfigVersion)
+	}
+}
+

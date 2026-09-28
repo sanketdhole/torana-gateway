@@ -1,10 +1,17 @@
 import React from 'react';
-import { Shield, RefreshCw, Radio, Key, Server, Cpu } from 'lucide-react';
+import { Shield, RefreshCw, Key, Server, LogOut, UserCheck } from 'lucide-react';
 
-export default function Header({ status, onRefresh, isRefreshing, sseConnected }) {
+export default function Header({
+  status,
+  user,
+  onRefresh,
+  isRefreshing,
+  sseConnected,
+  onLogout,
+}) {
   const pubKeyShort = status?.public_key_hex
-    ? `${status.public_key_hex.substring(0, 10)}...${status.public_key_hex.substring(status.public_key_hex.length - 8)}`
-    : 'Generating...';
+    ? `${status.public_key_hex.substring(0, 8)}...${status.public_key_hex.substring(status.public_key_hex.length - 6)}`
+    : 'Signing Key Active';
 
   return (
     <header className="app-header">
@@ -24,17 +31,17 @@ export default function Header({ status, onRefresh, isRefreshing, sseConnected }
       </div>
 
       <div className="header-meta">
-        <div className="glass-panel" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Key size={14} color="#818cf8" />
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Ed25519 PubKey:</span>
-          <span className="mono" style={{ fontSize: '11px', color: '#c7d2fe' }} title={status?.public_key_hex}>
+        <div className="glass-panel header-chip" title={`Full Public Key: ${status?.public_key_hex}`}>
+          <Key size={13} color="#818cf8" />
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Ed25519:</span>
+          <span className="mono" style={{ fontSize: '11px', color: '#c7d2fe' }}>
             {pubKeyShort}
           </span>
         </div>
 
-        <div className="glass-panel" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Server size={14} color="#34d399" />
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Active Version:</span>
+        <div className="glass-panel header-chip">
+          <Server size={13} color="#34d399" />
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Active:</span>
           <span className="mono badge badge-info" style={{ fontSize: '11px' }}>
             v{status?.config_version || 1}
           </span>
@@ -54,9 +61,33 @@ export default function Header({ status, onRefresh, isRefreshing, sseConnected }
           title="Refresh metrics and state"
           disabled={isRefreshing}
         >
-          <RefreshCw size={14} className={isRefreshing ? 'spin' : ''} />
-          Refresh
+          <RefreshCw size={13} className={isRefreshing ? 'spin' : ''} />
+          <span>Refresh</span>
         </button>
+
+        {/* User Session & Logout */}
+        {user && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border-color)', paddingLeft: '12px' }}>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: '#f3f4f6' }}>
+                {user.username || 'admin'}
+              </div>
+              <div style={{ fontSize: '10px', color: '#34d399', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {user.role || 'ADMIN'}
+              </div>
+            </div>
+
+            <button
+              onClick={onLogout}
+              className="btn btn-secondary"
+              style={{ padding: '6px 10px', fontSize: '11px', color: '#fb7185' }}
+              title="Logout from control plane"
+            >
+              <LogOut size={13} />
+              <span>Logout</span>
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );
