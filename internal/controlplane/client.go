@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	controlplanev1 "github.com/phaselume/torana/api/proto/controlplane/v1"
 	"github.com/phaselume/torana/internal/config"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -121,15 +123,38 @@ func (c *Client) runLoop(ctx context.Context) {
 
 func (c *Client) connectAndStream(ctx context.Context) error {
 	addr := c.cfg.PlatformURL
-	if strings.HasPrefix(addr, "http://") {
+	useTLS := false
+
+	if strings.HasPrefix(addr, "https://") {
+		addr = strings.TrimPrefix(addr, "https://")
+		useTLS = true
+	} else if strings.HasPrefix(addr, "grpcs://") {
+		addr = strings.TrimPrefix(addr, "grpcs://")
+		useTLS = true
+	} else if strings.HasPrefix(addr, "http://") {
 		addr = strings.TrimPrefix(addr, "http://")
+		useTLS = false
 	} else if strings.HasPrefix(addr, "grpc://") {
 		addr = strings.TrimPrefix(addr, "grpc://")
+		useTLS = false
 	}
 
-	c.logger.Info("connecting to control plane platform", "addr", addr)
+	if strings.HasSuffix(addr, ":443") {
+		useTLS = true
+	}
 
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	c.logger.Info("connecting to control plane platform", "addr", addr, "tls", useTLS)
+
+	var creds credentials.TransportCredentials
+	if useTLS {
+		creds = credentials.NewTLS(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+		})
+	} else {
+		creds = insecure.NewCredentials()
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return fmt.Errorf("grpc dial error: %w", err)
 	}
@@ -141,7 +166,7 @@ func (c *Client) connectAndStream(ctx context.Context) error {
 	enrollResp, err := client.Enroll(ctx, &controlplanev1.EnrollRequest{
 		Namespace:   c.cfg.Namespace,
 		NodeId:      c.nodeID,
-		EnrollToken: c.cfg.EnrollTokenFile,
+		EnrollToken: c.cfg.GetEnrollToken(),
 		Version:     "0.1.0-dev",
 	})
 	if err != nil {

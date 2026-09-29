@@ -46,6 +46,14 @@ func main() {
 		"environment", cfg.Environment,
 	)
 
+	if cfg.Token != "" {
+		logger.Info("loaded connection parameters from TORANA_TOKEN",
+			"org_id", cfg.OrgID,
+			"namespace", cfg.Namespace,
+			"platform_url", cfg.PlatformURL,
+		)
+	}
+
 	sup := supervisor.New(cfg, logger)
 
 	if err := sup.Run(context.Background()); err != nil {

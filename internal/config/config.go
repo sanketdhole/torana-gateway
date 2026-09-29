@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/phaselume/torana/pkg/bootstrap"
 )
 
 var (
@@ -37,8 +39,11 @@ func (e *CompileError) Error() string {
 
 // BootstrapConfig contains static configuration loaded once at process startup from flags/env.
 type BootstrapConfig struct {
+	Token              string
+	OrgID              string
 	Namespace          string
 	PlatformURL        string
+	EnrollToken        string
 	EnrollTokenFile    string
 	ListenHTTP         string
 	ListenGRPC         string
@@ -51,6 +56,22 @@ type BootstrapConfig struct {
 	IdleTimeout        time.Duration
 	DrainTimeout       time.Duration
 	TelemetryQueueSize int
+}
+
+// GetEnrollToken returns the active enrollment token, checking direct token string first,
+// or reading from the file if EnrollTokenFile is specified.
+func (b *BootstrapConfig) GetEnrollToken() string {
+	if b.EnrollToken != "" {
+		return b.EnrollToken
+	}
+	if b.EnrollTokenFile != "" {
+		if data, err := os.ReadFile(b.EnrollTokenFile); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+		// If file doesn't exist, it might be the token string itself
+		return b.EnrollTokenFile
+	}
+	return ""
 }
 
 // LoadBootstrapConfig loads startup configuration from environment variables with defaults.
@@ -73,10 +94,42 @@ func LoadBootstrapConfig() *BootstrapConfig {
 
 	defaultLKG := filepath.Join(os.TempDir(), "torana_lkg.json")
 
+	token := getEnv("TORANA_TOKEN", getEnv("BOOTSTRAP_TOKEN", ""))
+	orgID := getEnv("TORANA_ORG_ID", "")
+	platformURL := getEnv("PLATFORM_URL", getEnv("TORANA_PLATFORM_URL", ""))
+	enrollToken := getEnv("ENROLL_TOKEN", getEnv("TORANA_ENROLL_TOKEN", ""))
+	enrollTokenFile := getEnv("ENROLL_TOKEN_FILE", "")
+	namespace := getEnv("GATEWAY_NAMESPACE", getEnv("TORANA_NAMESPACE", ""))
+
+	// If TORANA_TOKEN is provided, unpack it to fill missing parameters
+	if token != "" {
+		if payload, err := bootstrap.DecodeBootstrapToken(token); err == nil {
+			if platformURL == "" {
+				platformURL = payload.PlatformURL
+			}
+			if namespace == "" {
+				namespace = payload.Namespace
+			}
+			if enrollToken == "" && enrollTokenFile == "" {
+				enrollToken = payload.EnrollToken
+			}
+			if orgID == "" {
+				orgID = payload.OrgID
+			}
+		}
+	}
+
+	if namespace == "" {
+		namespace = "default"
+	}
+
 	return &BootstrapConfig{
-		Namespace:          getEnv("GATEWAY_NAMESPACE", "default"),
-		PlatformURL:        getEnv("PLATFORM_URL", ""),
-		EnrollTokenFile:    getEnv("ENROLL_TOKEN_FILE", ""),
+		Token:              token,
+		OrgID:              orgID,
+		Namespace:          namespace,
+		PlatformURL:        platformURL,
+		EnrollToken:        enrollToken,
+		EnrollTokenFile:    enrollTokenFile,
 		ListenHTTP:         listenHTTP,
 		ListenGRPC:         listenGRPC,
 		PeersDNS:           getEnv("PEERS_DNS", ""),
@@ -97,6 +150,14 @@ func ParseFlags(args []string) (*BootstrapConfig, bool, error) {
 
 	cfg := LoadBootstrapConfig()
 
+	var tokenFlag string
+	var orgIDFlag string
+	var enrollTokenFlag string
+
+	fs.StringVar(&tokenFlag, "token", cfg.Token, "Self-contained bootstrap connection token (TORANA_TOKEN)")
+	fs.StringVar(&tokenFlag, "bootstrap-token", cfg.Token, "Self-contained bootstrap connection token (alias)")
+	fs.StringVar(&orgIDFlag, "org-id", cfg.OrgID, "Organization ID")
+	fs.StringVar(&enrollTokenFlag, "enroll-token", cfg.EnrollToken, "Direct node enrollment token string")
 	fs.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Deployment namespace identity")
 	fs.StringVar(&cfg.PlatformURL, "platform-url", cfg.PlatformURL, "Platform control plane gRPC service URL")
 	fs.StringVar(&cfg.EnrollTokenFile, "enroll-token-file", cfg.EnrollTokenFile, "Path to node enrollment token file")
@@ -109,6 +170,39 @@ func ParseFlags(args []string) (*BootstrapConfig, bool, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return nil, false, err
+	}
+
+	visited := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+
+	if tokenFlag != "" {
+		cfg.Token = tokenFlag
+	}
+	if orgIDFlag != "" {
+		cfg.OrgID = orgIDFlag
+	}
+	if enrollTokenFlag != "" {
+		cfg.EnrollToken = enrollTokenFlag
+	}
+
+	// If token is supplied, decode it and apply fields that were not explicitly set via flags
+	if cfg.Token != "" {
+		if payload, err := bootstrap.DecodeBootstrapToken(cfg.Token); err == nil {
+			if !visited["platform-url"] && (cfg.PlatformURL == "" || visited["token"] || visited["bootstrap-token"]) {
+				cfg.PlatformURL = payload.PlatformURL
+			}
+			if !visited["namespace"] && (cfg.Namespace == "" || cfg.Namespace == "default" || visited["token"] || visited["bootstrap-token"]) {
+				cfg.Namespace = payload.Namespace
+			}
+			if !visited["enroll-token"] && !visited["enroll-token-file"] && (cfg.EnrollToken == "" || visited["token"] || visited["bootstrap-token"]) {
+				cfg.EnrollToken = payload.EnrollToken
+			}
+			if !visited["org-id"] && (cfg.OrgID == "" || visited["token"] || visited["bootstrap-token"]) {
+				cfg.OrgID = payload.OrgID
+			}
+		}
 	}
 
 	return cfg, *showVersion, nil
