@@ -254,4 +254,7 @@ rules:
 
 ## License
 
-Torana is open-source software licensed under the [Apache License 2.0](LICENSE).
+Torana is licensed under the [Apache License 2.0 with Managed Service Clause](LICENSE).
+
+- **Permitted**: Anyone and any enterprise can freely run, deploy, self-host, and modify Torana for their internal business operations and infrastructure.
+- **Restricted**: Providing Torana or its control plane as a commercial hosted/managed cloud service (SaaS/PaaS) to third parties is prohibited without a commercial license from the project authors.
