@@ -1,6 +1,6 @@
 .PHONY: all build test bench lint vet proto clean docker-build mockplatform fuzz chaos bench-load profile controlplane controlplane-ui run-controlplane test-controlplane
 
-VERSION ?= 0.1.0-dev
+VERSION ?= 1.0.0
 BIN_DIR = bin
 BINARY = $(BIN_DIR)/gateway-data
 CP_BINARY = $(BIN_DIR)/torana-controlplane
@@ -81,5 +81,15 @@ clean:
 	rm -rf $(BIN_DIR)
 	rm -rf test/bench/out
 
+DOCKER_IMAGE ?= sanku/torana-data
+GHCR_IMAGE ?= ghcr.io/sanketdhole/torana-data
+
 docker-build:
-	docker build -t gateway-data:$(VERSION) -t gateway-data:latest .
+	docker build --build-arg VERSION=$(VERSION) \
+		-t $(DOCKER_IMAGE):$(VERSION) -t $(DOCKER_IMAGE):latest \
+		-t $(GHCR_IMAGE):$(VERSION) -t $(GHCR_IMAGE):latest \
+		-t torana-data:$(VERSION) -t torana-data:latest .
+
+docker-push:
+	docker push $(DOCKER_IMAGE):$(VERSION)
+	docker push $(DOCKER_IMAGE):latest

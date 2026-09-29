@@ -1,5 +1,8 @@
-*
-!build/*-runner
-!build/*-runner.jar
-!build/lib/*
-!build/quarkus-app/*
+.git
+.vscode
+.gradle
+bin
+test/bench/out
+*.sock
+*.db
+torana_lkg.json

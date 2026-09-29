@@ -12,7 +12,7 @@ import (
 
 var (
 	// Version is injected at build time using -ldflags "-X main.Version=x.y.z"
-	Version = "0.1.0-dev"
+	Version = "1.0.0"
 )
 
 func main() {
