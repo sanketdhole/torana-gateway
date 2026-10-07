@@ -98,9 +98,11 @@ func New(cfg *config.BootstrapConfig, logger *slog.Logger) *Supervisor {
 			}
 		} else {
 			httpLsnr.SetReady(false)
+			logger.Debug("no LKG snapshot found; gateway will remain unready until control plane delivers snapshot", "path", cfg.LKGPath)
 		}
 	} else {
 		httpLsnr.SetReady(false)
+		logger.Debug("no static bundle or LKG configured; gateway will remain unready until control plane delivers snapshot")
 	}
 
 	// 3. If PlatformURL is configured, initialize control plane client
@@ -151,7 +153,7 @@ func (s *Supervisor) UpdateSnapshot(snap *config.Snapshot) error {
 		}
 	}
 
-	s.logger.Info("applied configuration snapshot",
+	s.logger.Info("applied configuration snapshot: gateway is now ready",
 		"version", snap.Version,
 		"routes_count", len(snap.Routes),
 		"upstreams_count", len(snap.Upstreams),

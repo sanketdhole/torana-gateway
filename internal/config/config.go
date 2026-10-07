@@ -51,6 +51,9 @@ type BootstrapConfig struct {
 	ConfigBundle       string
 	LKGPath            string
 	Environment        string
+	Debug              bool
+	LogLevel           string
+	LogFormat          string
 	ReadTimeout        time.Duration
 	WriteTimeout       time.Duration
 	IdleTimeout        time.Duration
@@ -123,6 +126,22 @@ func LoadBootstrapConfig() *BootstrapConfig {
 		namespace = "default"
 	}
 
+	debugStr := strings.ToLower(getEnv("DEBUG", getEnv("TORANA_DEBUG", "")))
+	debug := debugStr == "true" || debugStr == "1" || debugStr == "yes" || debugStr == "on"
+
+	logLevel := strings.ToLower(getEnv("LOG_LEVEL", getEnv("TORANA_LOG_LEVEL", "")))
+	if logLevel == "" {
+		if debug {
+			logLevel = "debug"
+		} else {
+			logLevel = "info"
+		}
+	} else if logLevel == "debug" {
+		debug = true
+	}
+
+	logFormat := strings.ToLower(getEnv("LOG_FORMAT", getEnv("TORANA_LOG_FORMAT", "")))
+
 	return &BootstrapConfig{
 		Token:              token,
 		OrgID:              orgID,
@@ -136,6 +155,9 @@ func LoadBootstrapConfig() *BootstrapConfig {
 		ConfigBundle:       getEnv("CONFIG_BUNDLE", ""),
 		LKGPath:            getEnv("LKG_PATH", defaultLKG),
 		Environment:        getEnv("ENV", "development"),
+		Debug:              debug,
+		LogLevel:           logLevel,
+		LogFormat:          logFormat,
 		ReadTimeout:        time.Duration(readSec) * time.Second,
 		WriteTimeout:       time.Duration(writeSec) * time.Second,
 		IdleTimeout:        time.Duration(idleSec) * time.Second,
@@ -165,6 +187,9 @@ func ParseFlags(args []string) (*BootstrapConfig, bool, error) {
 	fs.StringVar(&cfg.ListenGRPC, "listen-grpc", cfg.ListenGRPC, "gRPC ingress listen address (default :9090)")
 	fs.StringVar(&cfg.PeersDNS, "peers-dns", cfg.PeersDNS, "DNS SRV / headless service name for peer discovery")
 	fs.StringVar(&cfg.ConfigBundle, "config-bundle", cfg.ConfigBundle, "Path to local static configuration bundle JSON file")
+	fs.BoolVar(&cfg.Debug, "debug", cfg.Debug, "Enable verbose debug logging (or set DEBUG=true)")
+	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Logging verbosity level (debug, info, warn, error)")
+	fs.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log output format (json, text)")
 
 	showVersion := fs.Bool("version", false, "Print binary version and exit")
 
@@ -176,6 +201,17 @@ func ParseFlags(args []string) (*BootstrapConfig, bool, error) {
 	fs.Visit(func(f *flag.Flag) {
 		visited[f.Name] = true
 	})
+
+	if visited["debug"] {
+		if cfg.Debug {
+			cfg.LogLevel = "debug"
+		}
+	}
+	if visited["log-level"] {
+		if strings.ToLower(cfg.LogLevel) == "debug" {
+			cfg.Debug = true
+		}
+	}
 
 	if tokenFlag != "" {
 		cfg.Token = tokenFlag

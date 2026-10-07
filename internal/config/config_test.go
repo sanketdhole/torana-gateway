@@ -230,3 +230,113 @@ func TestGetEnrollToken(t *testing.T) {
 		t.Errorf("expected empty token when neither is set, got %s", tok3)
 	}
 }
+
+func TestLoadBootstrapConfig_DebugAndLogLevel(t *testing.T) {
+	// Case 1: default (no debug env)
+	os.Unsetenv("DEBUG")
+	os.Unsetenv("TORANA_DEBUG")
+	os.Unsetenv("LOG_LEVEL")
+	os.Unsetenv("TORANA_LOG_LEVEL")
+	os.Unsetenv("LOG_FORMAT")
+	os.Unsetenv("TORANA_LOG_FORMAT")
+
+	cfg := LoadBootstrapConfig()
+	if cfg.Debug {
+		t.Errorf("expected default debug to be false, got true")
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("expected default log_level to be info, got %s", cfg.LogLevel)
+	}
+
+	// Case 2: DEBUG=true
+	os.Setenv("DEBUG", "true")
+	cfg = LoadBootstrapConfig()
+	if !cfg.Debug {
+		t.Errorf("expected debug to be true with DEBUG=true")
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected log_level to be debug with DEBUG=true, got %s", cfg.LogLevel)
+	}
+	os.Unsetenv("DEBUG")
+
+	// Case 3: LOG_LEVEL=warn
+	os.Setenv("LOG_LEVEL", "warn")
+	cfg = LoadBootstrapConfig()
+	if cfg.Debug {
+		t.Errorf("expected debug to be false with LOG_LEVEL=warn")
+	}
+	if cfg.LogLevel != "warn" {
+		t.Errorf("expected log_level to be warn, got %s", cfg.LogLevel)
+	}
+	os.Unsetenv("LOG_LEVEL")
+
+	// Case 4: LOG_LEVEL=debug
+	os.Setenv("LOG_LEVEL", "debug")
+	cfg = LoadBootstrapConfig()
+	if !cfg.Debug {
+		t.Errorf("expected debug to be true with LOG_LEVEL=debug")
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected log_level to be debug, got %s", cfg.LogLevel)
+	}
+	os.Unsetenv("LOG_LEVEL")
+
+	// Case 5: TORANA_DEBUG=1 and TORANA_LOG_FORMAT=json
+	os.Setenv("TORANA_DEBUG", "1")
+	os.Setenv("TORANA_LOG_FORMAT", "json")
+	cfg = LoadBootstrapConfig()
+	if !cfg.Debug {
+		t.Errorf("expected debug to be true with TORANA_DEBUG=1")
+	}
+	if cfg.LogFormat != "json" {
+		t.Errorf("expected log_format to be json, got %s", cfg.LogFormat)
+	}
+	os.Unsetenv("TORANA_DEBUG")
+	os.Unsetenv("TORANA_LOG_FORMAT")
+}
+
+func TestParseFlags_DebugAndLogLevel(t *testing.T) {
+	os.Unsetenv("DEBUG")
+	os.Unsetenv("TORANA_DEBUG")
+	os.Unsetenv("LOG_LEVEL")
+	os.Unsetenv("TORANA_LOG_LEVEL")
+
+	// Flag --debug
+	cfg, _, err := ParseFlags([]string{"--debug"})
+	if err != nil {
+		t.Fatalf("unexpected ParseFlags error: %v", err)
+	}
+	if !cfg.Debug {
+		t.Errorf("expected cfg.Debug to be true with --debug flag")
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected cfg.LogLevel to be debug with --debug flag, got %s", cfg.LogLevel)
+	}
+
+	// Flag --log-level=warn
+	cfg, _, err = ParseFlags([]string{"--log-level", "warn"})
+	if err != nil {
+		t.Fatalf("unexpected ParseFlags error: %v", err)
+	}
+	if cfg.Debug {
+		t.Errorf("expected cfg.Debug to be false with --log-level warn")
+	}
+	if cfg.LogLevel != "warn" {
+		t.Errorf("expected cfg.LogLevel to be warn, got %s", cfg.LogLevel)
+	}
+
+	// Flag --log-level=debug
+	cfg, _, err = ParseFlags([]string{"--log-level", "debug", "--log-format", "text"})
+	if err != nil {
+		t.Fatalf("unexpected ParseFlags error: %v", err)
+	}
+	if !cfg.Debug {
+		t.Errorf("expected cfg.Debug to be true with --log-level debug")
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected cfg.LogLevel to be debug, got %s", cfg.LogLevel)
+	}
+	if cfg.LogFormat != "text" {
+		t.Errorf("expected cfg.LogFormat to be text, got %s", cfg.LogFormat)
+	}
+}

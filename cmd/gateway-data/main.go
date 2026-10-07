@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/phaselume/torana/internal/config"
 	"github.com/phaselume/torana/internal/supervisor"
@@ -26,15 +27,44 @@ func main() {
 		os.Exit(0)
 	}
 
+	var level slog.Level
+	switch strings.ToLower(cfg.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		if cfg.Debug {
+			level = slog.LevelDebug
+		} else if cfg.Environment == "production" {
+			level = slog.LevelInfo
+		} else {
+			level = slog.LevelDebug
+		}
+	}
+
+	format := strings.ToLower(cfg.LogFormat)
+	if format == "" {
+		if cfg.Environment == "production" {
+			format = "json"
+		} else {
+			format = "text"
+		}
+	}
+
+	opts := &slog.HandlerOptions{
+		Level: level,
+	}
+
 	var logger *slog.Logger
-	if cfg.Environment == "production" {
-		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}))
+	if format == "json" {
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, opts))
 	} else {
-		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		}))
+		logger = slog.New(slog.NewTextHandler(os.Stdout, opts))
 	}
 
 	logger.Info("bootstrapping gateway-data",
@@ -44,6 +74,8 @@ func main() {
 		"listen_http", cfg.ListenHTTP,
 		"listen_grpc", cfg.ListenGRPC,
 		"environment", cfg.Environment,
+		"debug", cfg.Debug,
+		"log_level", level.String(),
 	)
 
 	if cfg.Token != "" {

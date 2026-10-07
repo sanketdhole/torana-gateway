@@ -34,7 +34,9 @@ EXPOSE 8080 9090
 ENV LISTEN_HTTP=":8080" \
     LISTEN_GRPC=":9090" \
     GATEWAY_NAMESPACE="default" \
-    ENV="production"
+    ENV="production" \
+    DEBUG="false" \
+    LOG_LEVEL="info"
 
 LABEL org.opencontainers.image.title="torana-data" \
       org.opencontainers.image.description="Torana Enterprise Data Plane Gateway" \

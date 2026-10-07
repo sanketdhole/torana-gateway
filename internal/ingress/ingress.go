@@ -140,6 +140,7 @@ func (l *HTTPListener) Stop(ctx context.Context) error {
 }
 
 func (l *HTTPListener) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	l.logger.Debug("health probe checked: UP")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"UP"}`))
@@ -147,12 +148,16 @@ func (l *HTTPListener) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 func (l *HTTPListener) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	if !l.ready.Load() {
+		l.logger.Debug("readiness probe checked: NOT_READY (waiting for configuration snapshot from control plane)",
+			"has_router", l.routerPtr.Load() != nil,
+		)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"status":"NOT_READY"}`))
 		return
 	}
 
+	l.logger.Debug("readiness probe checked: READY")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"READY"}`))
@@ -165,6 +170,11 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 	// 1. Fetch pre-compiled router atomically
 	rtr := l.routerPtr.Load()
 	if rtr == nil {
+		l.logger.Warn("gateway request rejected: gateway is not ready (waiting for configuration snapshot from control plane)",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"remote_addr", r.RemoteAddr,
+		)
 		http.Error(w, `{"error":"gateway not ready"}`, http.StatusServiceUnavailable)
 		return
 	}
@@ -184,9 +194,22 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 	// 3. Lock-free route resolution
 	match, err := rtr.Match(criteria)
 	if err != nil {
+		l.logger.Debug("route not found for incoming request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"host", r.Host,
+			"error", err,
+		)
 		http.Error(w, `{"error":"route not found"}`, http.StatusNotFound)
 		return
 	}
+
+	l.logger.Debug("incoming request matched route",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"route_id", match.Route.ID,
+		"upstream_id", match.Route.UpstreamID,
+	)
 
 	// 4. Get recycled Envelope from pool
 	env := pipeline.GetEnvelope(

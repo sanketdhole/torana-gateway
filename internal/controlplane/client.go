@@ -163,6 +163,11 @@ func (c *Client) connectAndStream(ctx context.Context) error {
 	client := controlplanev1.NewControlPlaneServiceClient(conn)
 
 	// 1. Enroll
+	c.logger.Debug("enrolling node with control plane",
+		"node_id", c.nodeID,
+		"namespace", c.cfg.Namespace,
+		"has_enroll_token", c.cfg.GetEnrollToken() != "",
+	)
 	enrollResp, err := client.Enroll(ctx, &controlplanev1.EnrollRequest{
 		Namespace:   c.cfg.Namespace,
 		NodeId:      c.nodeID,
@@ -179,6 +184,7 @@ func (c *Client) connectAndStream(ctx context.Context) error {
 	c.logger.Info("enrollment successful", "cluster_id", enrollResp.ClusterId)
 
 	// 2. Open Stream
+	c.logger.Debug("opening bidirectional control stream")
 	stream, err := client.Stream(ctx)
 	if err != nil {
 		return fmt.Errorf("stream open failed: %w", err)
@@ -200,6 +206,7 @@ func (c *Client) connectAndStream(ctx context.Context) error {
 	if err := stream.Send(helloMsg); err != nil {
 		return fmt.Errorf("failed to send Hello message: %w", err)
 	}
+	c.logger.Debug("sent Hello handshake message on control stream", "node_id", c.nodeID)
 
 	c.logger.Info("established control plane stream, waiting for snapshots")
 
@@ -232,6 +239,7 @@ func (c *Client) connectAndStream(ctx context.Context) error {
 					errChan <- err
 					return
 				}
+				c.logger.Debug("sent heartbeat to control plane", "node_id", c.nodeID)
 			}
 		}
 	}()
@@ -251,10 +259,16 @@ func (c *Client) connectAndStream(ctx context.Context) error {
 		msg, err := stream.Recv()
 		if err != nil {
 			if err == io.EOF {
+				c.logger.Debug("control plane stream closed by server (EOF)")
 				return nil
 			}
 			return fmt.Errorf("stream recv error: %w", err)
 		}
+
+		c.logger.Debug("received message from control plane stream",
+			"message_id", msg.MessageId,
+			"payload_type", fmt.Sprintf("%T", msg.Payload),
+		)
 
 		c.handleControlMessage(stream, msg)
 	}
@@ -269,7 +283,12 @@ func (c *Client) handleControlMessage(stream controlplanev1.ControlPlaneService_
 	switch p := msg.Payload.(type) {
 	case *controlplanev1.ControlMessage_Snapshot:
 		pbSnap := p.Snapshot
-		c.logger.Info("received config snapshot from control plane", "version", pbSnap.ConfigVersion)
+		c.logger.Info("received config snapshot from control plane",
+			"version", pbSnap.ConfigVersion,
+			"routes_count", len(pbSnap.Routes),
+			"upstreams_count", len(pbSnap.Upstreams),
+			"policies_count", len(pbSnap.Policies),
+		)
 
 		// Verify signature if key is present
 		if len(c.pubKey) > 0 && len(pbSnap.Ed25519Signature) > 0 {
@@ -290,6 +309,7 @@ func (c *Client) handleControlMessage(stream controlplanev1.ControlPlaneService_
 				})
 				return
 			}
+			c.logger.Debug("verified ed25519 snapshot signature successfully", "version", pbSnap.ConfigVersion)
 		}
 
 		// Convert proto snapshot to internal config.Snapshot
@@ -332,6 +352,34 @@ func (c *Client) handleControlMessage(stream controlplanev1.ControlPlaneService_
 		if rc, ok := c.consumer.(RevocationConsumer); ok {
 			_ = rc.ApplyRevocation(rev)
 		}
+
+	case *controlplanev1.ControlMessage_Delta:
+		c.logger.Warn("received delta config update from control plane (delta updates not supported in standalone client)",
+			"base_version", p.Delta.BaseConfigVersion,
+			"target_version", p.Delta.TargetConfigVersion,
+		)
+
+	case *controlplanev1.ControlMessage_Command:
+		c.logger.Info("received command from control plane",
+			"command_type", p.Command.CommandType.String(),
+			"timeout_ms", p.Command.TimeoutMs,
+		)
+
+	case *controlplanev1.ControlMessage_PluginAssignment:
+		c.logger.Info("received plugin assignment from control plane",
+			"plugin_id", p.PluginAssignment.PluginId,
+			"endpoint", p.PluginAssignment.Endpoint,
+			"phase", p.PluginAssignment.Phase,
+		)
+
+	case nil:
+		c.logger.Warn("received control message with empty payload", "message_id", msg.MessageId)
+
+	default:
+		c.logger.Warn("received unhandled control message payload type",
+			"message_id", msg.MessageId,
+			"payload_type", fmt.Sprintf("%T", p),
+		)
 	}
 }
 
