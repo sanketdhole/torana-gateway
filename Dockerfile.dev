@@ -1,0 +1,32 @@
+# Development Dockerfile with Air for Go hot-reloading
+FROM golang:alpine
+
+# Install build dependencies, git, and curl
+RUN apk add --no-cache git ca-certificates build-base curl
+
+# Install Air live reload utility
+RUN go install github.com/air-verse/air@latest
+
+WORKDIR /app
+
+# Pre-fetch Go modules for faster caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code (used when not volume-mounted)
+COPY . .
+
+# Expose HTTP and gRPC ingress ports
+EXPOSE 8080 9090
+
+# Default environment configuration for development
+ENV LISTEN_HTTP=":8080" \
+    LISTEN_GRPC=":9090" \
+    GATEWAY_NAMESPACE="default" \
+    ENV="development" \
+    DEBUG="true" \
+    LOG_LEVEL="debug" \
+    TORANA_NODE_ID_FILE="/data/node_id"
+
+# Run with Air for automatic rebuild on file changes
+CMD ["air", "-c", ".air.toml"]

@@ -39,3 +39,7 @@ nb-configuration.xml
 /.quarkus/cli/plugins/
 # TLS Certificates
 .certs/
+
+# Local Dev & Air
+tmp/
+data/

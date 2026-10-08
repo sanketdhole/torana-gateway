@@ -6,3 +6,5 @@ test/bench/out
 *.sock
 *.db
 torana_lkg.json
+tmp
+data
