@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/phaselume/torana/internal/agentauth"
 	"github.com/phaselume/torana/internal/config"
 	"github.com/phaselume/torana/internal/controlplane"
 	"github.com/phaselume/torana/internal/egress"
@@ -36,6 +38,8 @@ type Supervisor struct {
 	grpcLsnr   *ingressgrpc.Listener
 	cpClient   *controlplane.Client
 	revList    *authn.RevocationList
+	agentReg   *agentauth.Registry
+	verifier   *agentauth.Verifier
 	wg         sync.WaitGroup
 }
 
@@ -65,6 +69,11 @@ func New(cfg *config.BootstrapConfig, logger *slog.Logger) *Supervisor {
 
 	grpcLsnr := ingressgrpc.NewListener(cfg, holder, egressReg, grpcEgress, chain, logger)
 
+	agentReg := agentauth.NewRegistry()
+	verifier := agentauth.NewVerifier(agentReg, revList)
+	httpLsnr.SetVerifier(verifier)
+	grpcLsnr.SetVerifier(verifier)
+
 	sup := &Supervisor{
 		cfg:        cfg,
 		logger:     logger,
@@ -75,6 +84,8 @@ func New(cfg *config.BootstrapConfig, logger *slog.Logger) *Supervisor {
 		httpLsnr:   httpLsnr,
 		grpcLsnr:   grpcLsnr,
 		revList:    revList,
+		agentReg:   agentReg,
+		verifier:   verifier,
 	}
 
 	// 1. Check if a static bootstrap bundle file is provided
@@ -146,6 +157,10 @@ func (s *Supervisor) UpdateSnapshot(snap *config.Snapshot) error {
 		s.grpcLsnr.SetReady(true)
 	}
 
+	if snap.Agents != nil {
+		s.agentReg.UpdateFromSnapshot(snap.Agents)
+	}
+
 	// Persist LKG snapshot to disk
 	if s.cfg.LKGPath != "" {
 		if err := config.SaveLKG(s.cfg.LKGPath, snap); err != nil {
@@ -157,8 +172,26 @@ func (s *Supervisor) UpdateSnapshot(snap *config.Snapshot) error {
 		"version", snap.Version,
 		"routes_count", len(snap.Routes),
 		"upstreams_count", len(snap.Upstreams),
+		"agents_count", len(snap.Agents),
 	)
 	return nil
+}
+
+// AgentRegistry returns the supervisor's active agent registry.
+func (s *Supervisor) AgentRegistry() *agentauth.Registry {
+	return s.agentReg
+}
+
+// SetTenantPublicKey configures the tenant verification public key for user delegation tokens.
+func (s *Supervisor) SetTenantPublicKey(pub ed25519.PublicKey) {
+	if s.agentReg != nil {
+		s.agentReg.SetTenantPublicKey(pub)
+	}
+}
+
+// Verifier returns the supervisor's active delegation token verifier.
+func (s *Supervisor) Verifier() *agentauth.Verifier {
+	return s.verifier
 }
 
 // RevocationList returns the supervisor's active RevocationList.

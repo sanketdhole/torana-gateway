@@ -55,6 +55,7 @@ func (e *PolicyEngine) Evaluate(ctx context.Context, ident *authn.Identity, res 
 		"resource": buildResourceMap(res),
 		"action":   buildActionMap(act),
 		"request":  buildRequestMap(req),
+		"chain":    buildChainMap(req.Chain),
 	}
 
 	hasAllow := false
@@ -219,4 +220,20 @@ func getTenant(id *authn.Identity) string {
 		return id.Tenant
 	}
 	return ""
+}
+
+func buildChainMap(chain map[string]any) map[string]any {
+	if chain != nil {
+		return chain
+	}
+	return map[string]any{
+		"root": map[string]any{
+			"principal": "",
+			"type":      "",
+		},
+		"depth":            0,
+		"effective_scopes": []string{},
+		"caller_uri":       "",
+		"hops":             []map[string]any{},
+	}
 }

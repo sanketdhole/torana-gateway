@@ -67,6 +67,7 @@ type RequestAttributes struct {
 	RemoteIP string            `json:"remote_ip"`
 	Headers  map[string]string `json:"headers,omitempty"`
 	Time     time.Time         `json:"time"`
+	Chain    map[string]any    `json:"chain,omitempty"`
 }
 
 // Rule defines an individual authorization policy rule.

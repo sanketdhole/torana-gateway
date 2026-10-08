@@ -407,3 +407,40 @@ func TestParseFlags_NodeIDAndInstanceName(t *testing.T) {
 	}
 }
 
+func TestNodeIDPrecedence_FlagOverEnvOverFile(t *testing.T) {
+	tempDir := t.TempDir()
+	nodeFile := filepath.Join(tempDir, "node_id")
+
+	// 1. File only
+	_ = os.WriteFile(nodeFile, []byte("id-from-file\n"), 0644)
+	os.Unsetenv("TORANA_NODE_ID")
+	os.Unsetenv("NODE_ID")
+	os.Setenv("TORANA_NODE_ID_FILE", nodeFile)
+	defer func() {
+		os.Unsetenv("TORANA_NODE_ID")
+		os.Unsetenv("TORANA_NODE_ID_FILE")
+	}()
+
+	cfg1 := LoadBootstrapConfig()
+	if cfg1.NodeID != "id-from-file" {
+		t.Errorf("expected id-from-file, got %s", cfg1.NodeID)
+	}
+
+	// 2. Env over file
+	os.Setenv("TORANA_NODE_ID", "id-from-env")
+	cfg2 := LoadBootstrapConfig()
+	if cfg2.NodeID != "id-from-env" {
+		t.Errorf("expected id-from-env, got %s", cfg2.NodeID)
+	}
+
+	// 3. Flag over env and file
+	cfg3, _, err := ParseFlags([]string{"-node-id", "id-from-flag", "-node-id-file", nodeFile})
+	if err != nil {
+		t.Fatalf("ParseFlags failed: %v", err)
+	}
+	if cfg3.NodeID != "id-from-flag" {
+		t.Errorf("expected id-from-flag, got %s", cfg3.NodeID)
+	}
+}
+
+

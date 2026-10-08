@@ -11,20 +11,23 @@ import (
 // Event contains sanitized metadata regarding a processed request.
 // CUSTOMER PAYLOADS (PROMPTS/COMPLETIONS) ARE STRICTLY EXCLUDED.
 type Event struct {
-	Timestamp    time.Time         `json:"timestamp"`
-	RouteID      string            `json:"route_id"`
-	UpstreamID   string            `json:"upstream_id"`
-	Method       string            `json:"method"`
-	Path         string            `json:"path"`
-	StatusCode   int               `json:"status_code"`
-	DurationMs   int64             `json:"duration_ms"`
-	PromptTokens int               `json:"prompt_tokens,omitempty"`
-	ComplTokens  int               `json:"completion_tokens,omitempty"`
-	TotalTokens  int               `json:"total_tokens,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	TenantID     string            `json:"tenant_id,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	CustomMeta   map[string]string `json:"custom_meta,omitempty"`
+	Timestamp       time.Time         `json:"timestamp"`
+	RouteID         string            `json:"route_id"`
+	UpstreamID      string            `json:"upstream_id"`
+	Method          string            `json:"method"`
+	Path            string            `json:"path"`
+	StatusCode      int               `json:"status_code"`
+	DurationMs      int64             `json:"duration_ms"`
+	PromptTokens    int               `json:"prompt_tokens,omitempty"`
+	ComplTokens     int               `json:"completion_tokens,omitempty"`
+	TotalTokens     int               `json:"total_tokens,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	TenantID        string            `json:"tenant_id,omitempty"`
+	Error           string            `json:"error,omitempty"`
+	RootPrincipal   string            `json:"root_principal,omitempty"`
+	CallerPrincipal string            `json:"caller_principal,omitempty"`
+	ChainDepth      int               `json:"chain_depth,omitempty"`
+	CustomMeta      map[string]string `json:"custom_meta,omitempty"`
 }
 
 // Sink receives batches of telemetry events for export to the platform control plane.
@@ -45,7 +48,7 @@ func NewLoggingSink(logger *slog.Logger) *LoggingSink {
 // SendBatch logs each metadata event.
 func (s *LoggingSink) SendBatch(_ context.Context, events []Event) error {
 	for _, e := range events {
-		s.logger.Info("telemetry metadata event",
+		args := []any{
 			"route_id", e.RouteID,
 			"upstream_id", e.UpstreamID,
 			"status", e.StatusCode,
@@ -53,7 +56,17 @@ func (s *LoggingSink) SendBatch(_ context.Context, events []Event) error {
 			"total_tokens", e.TotalTokens,
 			"model", e.Model,
 			"tenant_id", e.TenantID,
-		)
+		}
+		if e.RootPrincipal != "" {
+			args = append(args, "root_principal", e.RootPrincipal)
+		}
+		if e.CallerPrincipal != "" {
+			args = append(args, "caller_principal", e.CallerPrincipal)
+		}
+		if e.ChainDepth > 0 {
+			args = append(args, "chain_depth", e.ChainDepth)
+		}
+		s.logger.Info("telemetry metadata event", args...)
 	}
 	return nil
 }

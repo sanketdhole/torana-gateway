@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/phaselume/torana/internal/agentauth"
 	"github.com/phaselume/torana/internal/config"
 	"github.com/phaselume/torana/internal/egress"
 	"github.com/phaselume/torana/internal/ingress/a2a"
@@ -46,6 +48,12 @@ type HTTPListener struct {
 	wsHandler  *ws.Handler
 	mcpHandler *mcp.Handler
 	a2aHandler *a2a.Handler
+	verifier   *agentauth.Verifier
+}
+
+// SetVerifier configures the delegation token verifier.
+func (l *HTTPListener) SetVerifier(v *agentauth.Verifier) {
+	l.verifier = v
 }
 
 // SetWSHandler configures the WebSocket upgrade handler.
@@ -179,9 +187,51 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strip client-controlled headers that must only be set by verified identity or server filters
+	// Strip client-controlled and untrusted headers
 	r.Header.Del("X-Identity-Claims")
 	r.Header.Del("X-Estimated-Tokens")
+	r.Header.Del("X-Torana-Root-Principal")
+	r.Header.Del("X-Torana-Caller-Principal")
+	r.Header.Del("X-Torana-Chain-Depth")
+	r.Header.Del("X-Torana-Effective-Scopes")
+	r.Header.Del("X-Torana-Delegation-Verified")
+
+	// Verify delegation token if present
+	delegationHeader := r.Header.Get("X-Torana-Delegation")
+	var chainCtx *agentauth.ChainContext
+
+	if delegationHeader != "" && l.verifier != nil {
+		token, err := agentauth.ParseDelegationToken(delegationHeader)
+		if err != nil {
+			l.logger.Warn("invalid delegation token format", "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"delegation_verification_failed","reason":%q}`, err.Error())))
+			return
+		}
+
+		res := l.verifier.Verify(r.Context(), token)
+		if !res.Valid {
+			l.logger.Warn("delegation token verification failed", "reason", res.Reason)
+			w.Header().Set("Content-Type", "application/json")
+			status := res.StatusCode
+			if status == 0 {
+				status = http.StatusForbidden
+			}
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"delegation_verification_failed","reason":%q}`, res.Reason)))
+			return
+		}
+
+		chainCtx = res.ChainContext
+
+		// Inject verified headers for upstream targets
+		r.Header.Set("X-Torana-Root-Principal", res.RootPrincipal)
+		r.Header.Set("X-Torana-Caller-Principal", res.CallerPrincipal)
+		r.Header.Set("X-Torana-Chain-Depth", strconv.Itoa(res.ChainDepth))
+		r.Header.Set("X-Torana-Effective-Scopes", strings.Join(res.EffectiveScopes, ","))
+		r.Header.Set("X-Torana-Delegation-Verified", "true")
+	}
 
 	// 2. Extract matching criteria with zero allocations on hot path
 	criteria := router.MatchCriteria{
@@ -229,6 +279,18 @@ func (l *HTTPListener) handleGateway(w http.ResponseWriter, r *http.Request) {
 		RemoteIP: r.RemoteAddr,
 		Protocol: r.Proto,
 		TLS:      r.TLS,
+	}
+
+	if chainCtx != nil {
+		env.SetMetadata("root_principal", chainCtx.RootPrincipal)
+		env.SetMetadata("root_type", chainCtx.RootType)
+		env.SetMetadata("caller_principal", chainCtx.CallerURI)
+		env.SetMetadata("chain_depth", strconv.Itoa(chainCtx.Depth))
+		env.SetMetadata("effective_scopes", strings.Join(chainCtx.EffectiveScopes, ","))
+		env.SetMetadata("delegation_verified", "true")
+		env.Chain = agentauth.BuildCELChainMap(chainCtx)
+	} else {
+		env.Chain = agentauth.BuildCELChainMap(nil)
 	}
 
 	// 5. Run Phase 0: Authn
@@ -390,18 +452,25 @@ func (l *HTTPListener) emitTelemetry(env *pipeline.Envelope, status int, duratio
 
 	tenantID, _ := env.GetMetadata("tenant_id")
 	model, _ := env.GetMetadata("model")
+	rootPrincipal, _ := env.GetMetadata("root_principal")
+	callerPrincipal, _ := env.GetMetadata("caller_principal")
+	depthStr, _ := env.GetMetadata("chain_depth")
+	chainDepth, _ := strconv.Atoi(depthStr)
 
 	l.emitter.Emit(telemetry.Event{
-		Timestamp:  env.StartTime,
-		RouteID:    routeID,
-		UpstreamID: upstreamID,
-		Method:     env.Method,
-		Path:       env.Path,
-		StatusCode: status,
-		DurationMs: duration.Milliseconds(),
-		Model:      model,
-		TenantID:   tenantID,
-		Error:      errStr,
-		CustomMeta: env.Metadata,
+		Timestamp:       env.StartTime,
+		RouteID:         routeID,
+		UpstreamID:      upstreamID,
+		Method:          env.Method,
+		Path:            env.Path,
+		StatusCode:      status,
+		DurationMs:      duration.Milliseconds(),
+		Model:           model,
+		TenantID:        tenantID,
+		Error:           errStr,
+		RootPrincipal:   rootPrincipal,
+		CallerPrincipal: callerPrincipal,
+		ChainDepth:      chainDepth,
+		CustomMeta:      env.Metadata,
 	})
 }

@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/phaselume/torana/internal/agentauth"
 	"github.com/phaselume/torana/internal/config"
 	"github.com/phaselume/torana/internal/egress"
 	egressgrpc "github.com/phaselume/torana/internal/egress/grpc"
@@ -32,6 +34,12 @@ type Listener struct {
 	logger     *slog.Logger
 	routerPtr  atomic.Pointer[router.Router]
 	ready      atomic.Bool
+	verifier   *agentauth.Verifier
+}
+
+// SetVerifier configures the delegation token verifier.
+func (l *Listener) SetVerifier(v *agentauth.Verifier) {
+	l.verifier = v
 }
 
 // NewListener creates a new protocol-agnostic gRPC ingress listener.
@@ -134,6 +142,37 @@ func (l *Listener) unknownServiceHandler(srv any, serverStream grpc.ServerStream
 
 	// 1. Extract metadata from stream context
 	incomingMD, _ := metadata.FromIncomingContext(ctx)
+
+	// Sanitize untrusted client headers
+	delete(incomingMD, "x-torana-root-principal")
+	delete(incomingMD, "x-torana-caller-principal")
+	delete(incomingMD, "x-torana-chain-depth")
+	delete(incomingMD, "x-torana-effective-scopes")
+	delete(incomingMD, "x-torana-delegation-verified")
+
+	delegationVals := incomingMD.Get("x-torana-delegation")
+	var chainCtx *agentauth.ChainContext
+	if len(delegationVals) > 0 && l.verifier != nil {
+		token, err := agentauth.ParseDelegationToken(delegationVals[0])
+		if err != nil {
+			return status.Errorf(codes.Unauthenticated, "delegation_verification_failed: %v", err)
+		}
+		res := l.verifier.Verify(ctx, token)
+		if !res.Valid {
+			code := codes.PermissionDenied
+			if res.StatusCode == http.StatusUnauthorized {
+				code = codes.Unauthenticated
+			}
+			return status.Errorf(code, "delegation_verification_failed: %s", res.Reason)
+		}
+		chainCtx = res.ChainContext
+		incomingMD.Set("x-torana-root-principal", res.RootPrincipal)
+		incomingMD.Set("x-torana-caller-principal", res.CallerPrincipal)
+		incomingMD.Set("x-torana-chain-depth", strconv.Itoa(res.ChainDepth))
+		incomingMD.Set("x-torana-effective-scopes", strings.Join(res.EffectiveScopes, ","))
+		incomingMD.Set("x-torana-delegation-verified", "true")
+	}
+
 	headers := make(http.Header)
 	for k, vv := range incomingMD {
 		for _, v := range vv {
@@ -192,6 +231,18 @@ func (l *Listener) unknownServiceHandler(srv any, serverStream grpc.ServerStream
 	env.Upstream = upstreamCluster
 	env.PeerInfo = pipeline.PeerInfo{
 		Protocol: "grpc",
+	}
+
+	if chainCtx != nil {
+		env.SetMetadata("root_principal", chainCtx.RootPrincipal)
+		env.SetMetadata("root_type", chainCtx.RootType)
+		env.SetMetadata("caller_principal", chainCtx.CallerURI)
+		env.SetMetadata("chain_depth", strconv.Itoa(chainCtx.Depth))
+		env.SetMetadata("effective_scopes", strings.Join(chainCtx.EffectiveScopes, ","))
+		env.SetMetadata("delegation_verified", "true")
+		env.Chain = agentauth.BuildCELChainMap(chainCtx)
+	} else {
+		env.Chain = agentauth.BuildCELChainMap(nil)
 	}
 
 	// 4. Run PhaseAuthn

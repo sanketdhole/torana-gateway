@@ -165,6 +165,7 @@ type Envelope struct {
 	Metadata     map[string]string
 	Claims       map[string]string
 	Identity     any
+	Chain        any
 	Body         io.Reader
 	BufferedBody []byte
 	PeerInfo     PeerInfo
@@ -185,6 +186,7 @@ func (e *Envelope) Reset() {
 	e.StartTime = time.Time{}
 	e.Headers = nil
 	e.Identity = nil
+	e.Chain = nil
 
 	clear(e.Metadata)
 	clear(e.Claims)

@@ -47,6 +47,7 @@ func NewCompiler(cfg CompilerConfig) (*Compiler, error) {
 		cel.Variable("resource", cel.MapType(cel.StringType, cel.DynType)),
 		cel.Variable("action", cel.MapType(cel.StringType, cel.DynType)),
 		cel.Variable("request", cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable("chain", cel.MapType(cel.StringType, cel.DynType)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
