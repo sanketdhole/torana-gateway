@@ -103,12 +103,20 @@ func (f *Filter) Process(ctx context.Context, env *pipeline.Envelope) (pipeline.
 		}
 	}
 
+	var chainMap map[string]any
+	if env.Chain != nil {
+		if cm, ok := env.Chain.(map[string]any); ok {
+			chainMap = cm
+		}
+	}
+
 	req := RequestAttributes{
 		Path:     env.Path,
 		Method:   env.Method,
 		RemoteIP: env.PeerInfo.RemoteIP,
 		Headers:  headers,
 		Time:     time.Now(),
+		Chain:    chainMap,
 	}
 
 	err := f.engine.Evaluate(ctx, ident, res, act, req)

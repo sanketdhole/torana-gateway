@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/phaselume/torana/internal/agentauth"
 	"github.com/phaselume/torana/pkg/bootstrap"
 )
 
@@ -145,16 +146,16 @@ func LoadBootstrapConfig() *BootstrapConfig {
 
 	logFormat := strings.ToLower(getEnv("LOG_FORMAT", getEnv("TORANA_LOG_FORMAT", "")))
 
-	defaultNodeIDFile := getEnv("NODE_ID_FILE", getEnv("TORANA_NODE_ID_FILE", ""))
+	defaultNodeIDFile := getEnv("TORANA_NODE_ID_FILE", getEnv("NODE_ID_FILE", ""))
 	if defaultNodeIDFile == "" {
 		if info, err := os.Stat("/data"); err == nil && info.IsDir() {
-			defaultNodeIDFile = "/data/torana_node_id"
+			defaultNodeIDFile = "/data/node_id"
 		} else {
-			defaultNodeIDFile = filepath.Join(os.TempDir(), "torana_node_id")
+			defaultNodeIDFile = "./data/node_id"
 		}
 	}
 
-	nodeID := getEnv("NODE_ID", getEnv("TORANA_NODE_ID", getEnv("INSTANCE_NAME", getEnv("GATEWAY_NODE_ID", ""))))
+	nodeID := getEnv("TORANA_NODE_ID", getEnv("NODE_ID", getEnv("INSTANCE_NAME", getEnv("GATEWAY_NODE_ID", ""))))
 	nodeID = ResolveAndPersistNodeID(nodeID, defaultNodeIDFile, namespace)
 
 	return &BootstrapConfig{
@@ -346,13 +347,17 @@ type RouteRule struct {
 	Timeout           time.Duration      `json:"timeout"`
 }
 
+// AgentRegistryEntry configures an AI agent's public key and security posture.
+type AgentRegistryEntry = agentauth.AgentRegistryEntry
+
 // Snapshot is an immutable configuration snapshot received from the platform control plane.
 type Snapshot struct {
-	Version   uint64                     `json:"version"`
-	Signature string                     `json:"signature,omitempty"`
-	Timestamp time.Time                  `json:"timestamp"`
-	Routes    []RouteRule                `json:"routes"`
-	Upstreams map[string]UpstreamCluster `json:"upstreams"`
+	Version   uint64                        `json:"version"`
+	Signature string                        `json:"signature,omitempty"`
+	Timestamp time.Time                     `json:"timestamp"`
+	Routes    []RouteRule                   `json:"routes"`
+	Upstreams map[string]UpstreamCluster    `json:"upstreams"`
+	Agents    map[string]AgentRegistryEntry `json:"agents,omitempty"`
 }
 
 // Validate performs structural and integrity verification on a snapshot.
@@ -833,24 +838,21 @@ func ResolveAndPersistNodeID(explicitID, nodeIDFile, namespace string) string {
 	}
 
 	var generatedID string
-	hostname, _ := os.Hostname()
-	hostname = strings.TrimSpace(hostname)
-	if hostname != "" && hostname != "localhost" && !strings.HasPrefix(hostname, "localhost.") {
-		// In Docker and K8s, container hostname is typically the container ID or pod name
-		generatedID = fmt.Sprintf("gw-%s-%s", namespace, hostname)
+	randBytes := make([]byte, 4)
+	if _, err := rand.Read(randBytes); err == nil {
+		generatedID = fmt.Sprintf("gw-%s-%x", namespace, randBytes)
 	} else {
-		randBytes := make([]byte, 4)
-		if _, err := rand.Read(randBytes); err != nil {
-			generatedID = fmt.Sprintf("gw-%s-%d", namespace, time.Now().UnixNano()%10000)
-		} else {
-			generatedID = fmt.Sprintf("gw-%s-%x", namespace, randBytes)
-		}
+		generatedID = fmt.Sprintf("gw-%s-%08x", namespace, time.Now().UnixNano()%0xFFFFFFFF)
 	}
 
 	if nodeIDFile != "" {
-		_ = persistNodeIDToFile(nodeIDFile, generatedID)
+		if err := persistNodeIDToFile(nodeIDFile, generatedID); err != nil {
+			// Fallback to temp directory if specified path is not writable
+			tmpFallback := filepath.Join(os.TempDir(), "node_id")
+			_ = persistNodeIDToFile(tmpFallback, generatedID)
+		}
 	} else {
-		tmpFallback := filepath.Join(os.TempDir(), "torana_node_id")
+		tmpFallback := filepath.Join(os.TempDir(), "node_id")
 		_ = persistNodeIDToFile(tmpFallback, generatedID)
 	}
 
@@ -862,5 +864,9 @@ func persistNodeIDToFile(filePath, id string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filePath, []byte(id+"\n"), 0644)
+	tmpFile := fmt.Sprintf("%s.tmp.%d", filePath, time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, []byte(id+"\n"), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, filePath)
 }

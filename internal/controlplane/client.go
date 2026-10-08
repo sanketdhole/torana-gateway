@@ -70,6 +70,9 @@ func (c *Client) NodeID() string {
 // SetPublicKey sets the Ed25519 public key for signature verification.
 func (c *Client) SetPublicKey(pub ed25519.PublicKey) {
 	c.pubKey = pub
+	if tkc, ok := c.consumer.(interface{ SetTenantPublicKey(ed25519.PublicKey) }); ok {
+		tkc.SetTenantPublicKey(pub)
+	}
 }
 
 // Start launches the control plane streaming background worker.
