@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -49,10 +48,9 @@ type Client struct {
 
 // NewClient creates a new control plane streaming client.
 func NewClient(cfg *config.BootstrapConfig, consumer SnapshotConsumer, logger *slog.Logger) *Client {
-	hostname, _ := net.LookupHost("localhost")
-	nodeID := fmt.Sprintf("gateway-%s-%d", cfg.Namespace, time.Now().UnixNano()%10000)
-	if len(hostname) > 0 {
-		nodeID = fmt.Sprintf("gateway-%s", nodeID)
+	nodeID := cfg.NodeID
+	if nodeID == "" {
+		nodeID = config.ResolveAndPersistNodeID("", cfg.NodeIDFile, cfg.Namespace)
 	}
 
 	return &Client{
@@ -62,6 +60,11 @@ func NewClient(cfg *config.BootstrapConfig, consumer SnapshotConsumer, logger *s
 		nodeID:   nodeID,
 		stopChan: make(chan struct{}),
 	}
+}
+
+// NodeID returns the active node / instance identifier.
+func (c *Client) NodeID() string {
+	return c.nodeID
 }
 
 // SetPublicKey sets the Ed25519 public key for signature verification.

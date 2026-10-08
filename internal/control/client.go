@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
-	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,11 +46,11 @@ func NewClient(
 	logger *slog.Logger,
 ) *Client {
 	if cfg.NodeID == "" {
-		hostname, _ := os.Hostname()
-		if hostname == "" {
-			hostname = "gateway"
+		nodeFile := ""
+		if cfg.StateDir != "" {
+			nodeFile = filepath.Join(cfg.StateDir, "node_id")
 		}
-		cfg.NodeID = fmt.Sprintf("%s-%s-%d", hostname, cfg.Namespace, time.Now().UnixNano()%10000)
+		cfg.NodeID = config.ResolveAndPersistNodeID("", nodeFile, cfg.Namespace)
 	}
 	if len(cfg.SupportedProtocols) == 0 {
 		cfg.SupportedProtocols = []string{"http", "grpc", "ws", "mcp", "a2a"}

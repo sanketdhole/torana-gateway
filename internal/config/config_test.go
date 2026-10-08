@@ -340,3 +340,70 @@ func TestParseFlags_DebugAndLogLevel(t *testing.T) {
 		t.Errorf("expected cfg.LogFormat to be text, got %s", cfg.LogFormat)
 	}
 }
+
+func TestResolveAndPersistNodeID_PersistsAcrossRestarts(t *testing.T) {
+	tempDir := t.TempDir()
+	nodeFile := filepath.Join(tempDir, "node_id")
+
+	// First start: empty explicit ID, should generate and persist
+	id1 := ResolveAndPersistNodeID("", nodeFile, "prod")
+	if id1 == "" {
+		t.Fatalf("expected non-empty generated node ID")
+	}
+
+	// Verify file was written
+	data, err := os.ReadFile(nodeFile)
+	if err != nil {
+		t.Fatalf("expected node ID file to exist: %v", err)
+	}
+	if string(data) != id1+"\n" {
+		t.Errorf("expected file content %q, got %q", id1+"\n", string(data))
+	}
+
+	// Second start (simulating container restart): should reuse the exact same ID from file
+	id2 := ResolveAndPersistNodeID("", nodeFile, "prod")
+	if id1 != id2 {
+		t.Errorf("expected node ID to match across restarts: %q != %q", id1, id2)
+	}
+}
+
+func TestResolveAndPersistNodeID_ExplicitOverridesAndPersists(t *testing.T) {
+	tempDir := t.TempDir()
+	nodeFile := filepath.Join(tempDir, "node_id")
+
+	explicitID := "gateway-custom-instance-01"
+	id := ResolveAndPersistNodeID(explicitID, nodeFile, "prod")
+	if id != explicitID {
+		t.Errorf("expected %q, got %q", explicitID, id)
+	}
+
+	// Restart with empty explicit ID should now return the previously saved explicit ID
+	restartedID := ResolveAndPersistNodeID("", nodeFile, "prod")
+	if restartedID != explicitID {
+		t.Errorf("expected %q across restart, got %q", explicitID, restartedID)
+	}
+}
+
+func TestParseFlags_NodeIDAndInstanceName(t *testing.T) {
+	tempDir := t.TempDir()
+	nodeFile := filepath.Join(tempDir, "node_id")
+
+	// Test --node-id flag
+	cfg, _, err := ParseFlags([]string{"--node-id", "my-node-42", "--node-id-file", nodeFile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NodeID != "my-node-42" {
+		t.Errorf("expected node ID my-node-42, got %s", cfg.NodeID)
+	}
+
+	// Test --instance-name flag alias
+	cfg2, _, err := ParseFlags([]string{"--instance-name", "my-instance-99", "--node-id-file", nodeFile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg2.NodeID != "my-instance-99" {
+		t.Errorf("expected node ID my-instance-99, got %s", cfg2.NodeID)
+	}
+}
+
