@@ -69,6 +69,7 @@ func main() {
 
 	logger.Info("bootstrapping gateway-data",
 		"version", Version,
+		"node_id", cfg.NodeID,
 		"namespace", cfg.Namespace,
 		"platform_url", cfg.PlatformURL,
 		"listen_http", cfg.ListenHTTP,

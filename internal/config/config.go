@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -39,6 +40,8 @@ func (e *CompileError) Error() string {
 
 // BootstrapConfig contains static configuration loaded once at process startup from flags/env.
 type BootstrapConfig struct {
+	NodeID             string
+	NodeIDFile         string
 	Token              string
 	OrgID              string
 	Namespace          string
@@ -142,7 +145,21 @@ func LoadBootstrapConfig() *BootstrapConfig {
 
 	logFormat := strings.ToLower(getEnv("LOG_FORMAT", getEnv("TORANA_LOG_FORMAT", "")))
 
+	defaultNodeIDFile := getEnv("NODE_ID_FILE", getEnv("TORANA_NODE_ID_FILE", ""))
+	if defaultNodeIDFile == "" {
+		if info, err := os.Stat("/data"); err == nil && info.IsDir() {
+			defaultNodeIDFile = "/data/torana_node_id"
+		} else {
+			defaultNodeIDFile = filepath.Join(os.TempDir(), "torana_node_id")
+		}
+	}
+
+	nodeID := getEnv("NODE_ID", getEnv("TORANA_NODE_ID", getEnv("INSTANCE_NAME", getEnv("GATEWAY_NODE_ID", ""))))
+	nodeID = ResolveAndPersistNodeID(nodeID, defaultNodeIDFile, namespace)
+
 	return &BootstrapConfig{
+		NodeID:             nodeID,
+		NodeIDFile:         defaultNodeIDFile,
 		Token:              token,
 		OrgID:              orgID,
 		Namespace:          namespace,
@@ -175,7 +192,12 @@ func ParseFlags(args []string) (*BootstrapConfig, bool, error) {
 	var tokenFlag string
 	var orgIDFlag string
 	var enrollTokenFlag string
+	var nodeIDFlag string
+	var instanceNameFlag string
 
+	fs.StringVar(&nodeIDFlag, "node-id", "", "Unique gateway node / instance identifier")
+	fs.StringVar(&instanceNameFlag, "instance-name", "", "Alias for -node-id")
+	fs.StringVar(&cfg.NodeIDFile, "node-id-file", cfg.NodeIDFile, "Path to persistent file storing gateway node ID")
 	fs.StringVar(&tokenFlag, "token", cfg.Token, "Self-contained bootstrap connection token (TORANA_TOKEN)")
 	fs.StringVar(&tokenFlag, "bootstrap-token", cfg.Token, "Self-contained bootstrap connection token (alias)")
 	fs.StringVar(&orgIDFlag, "org-id", cfg.OrgID, "Organization ID")
@@ -201,6 +223,15 @@ func ParseFlags(args []string) (*BootstrapConfig, bool, error) {
 	fs.Visit(func(f *flag.Flag) {
 		visited[f.Name] = true
 	})
+
+	if visited["node-id"] && nodeIDFlag != "" {
+		cfg.NodeID = nodeIDFlag
+	} else if visited["instance-name"] && instanceNameFlag != "" {
+		cfg.NodeID = instanceNameFlag
+	}
+
+	// Persist the resolved NodeID so container restarts reuse it
+	cfg.NodeID = ResolveAndPersistNodeID(cfg.NodeID, cfg.NodeIDFile, cfg.Namespace)
 
 	if visited["debug"] {
 		if cfg.Debug {
@@ -761,4 +792,75 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+// ResolveAndPersistNodeID determines a stable instance name and persists it to disk.
+// Priority:
+// 1. Explicit ID provided via flag or environment variable.
+// 2. Previously persisted ID in nodeIDFile (or temporary fallback file).
+// 3. Container hostname if available and not generic localhost.
+// 4. Random cryptographically-seeded suffix.
+// The resulting ID is persisted to nodeIDFile so restarts in the same container reuse it.
+func ResolveAndPersistNodeID(explicitID, nodeIDFile, namespace string) string {
+	if explicitID = strings.TrimSpace(explicitID); explicitID != "" {
+		if nodeIDFile != "" {
+			_ = persistNodeIDToFile(nodeIDFile, explicitID)
+		}
+		return explicitID
+	}
+
+	// Check if already persisted to nodeIDFile
+	if nodeIDFile != "" {
+		if data, err := os.ReadFile(nodeIDFile); err == nil {
+			saved := strings.TrimSpace(string(data))
+			if saved != "" {
+				return saved
+			}
+		}
+	} else {
+		// Fallback location if nodeIDFile was not specified
+		tmpFallback := filepath.Join(os.TempDir(), "torana_node_id")
+		if data, err := os.ReadFile(tmpFallback); err == nil {
+			saved := strings.TrimSpace(string(data))
+			if saved != "" {
+				return saved
+			}
+		}
+	}
+
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	var generatedID string
+	hostname, _ := os.Hostname()
+	hostname = strings.TrimSpace(hostname)
+	if hostname != "" && hostname != "localhost" && !strings.HasPrefix(hostname, "localhost.") {
+		// In Docker and K8s, container hostname is typically the container ID or pod name
+		generatedID = fmt.Sprintf("gw-%s-%s", namespace, hostname)
+	} else {
+		randBytes := make([]byte, 4)
+		if _, err := rand.Read(randBytes); err != nil {
+			generatedID = fmt.Sprintf("gw-%s-%d", namespace, time.Now().UnixNano()%10000)
+		} else {
+			generatedID = fmt.Sprintf("gw-%s-%x", namespace, randBytes)
+		}
+	}
+
+	if nodeIDFile != "" {
+		_ = persistNodeIDToFile(nodeIDFile, generatedID)
+	} else {
+		tmpFallback := filepath.Join(os.TempDir(), "torana_node_id")
+		_ = persistNodeIDToFile(tmpFallback, generatedID)
+	}
+
+	return generatedID
+}
+
+func persistNodeIDToFile(filePath, id string) error {
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, []byte(id+"\n"), 0644)
 }
