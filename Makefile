@@ -1,4 +1,4 @@
-.PHONY: all build test bench lint vet proto clean docker-build mockplatform fuzz chaos bench-load profile controlplane controlplane-ui run-controlplane test-controlplane
+.PHONY: all build test bench lint vet proto clean docker-build mockplatform fuzz chaos bench-load profile controlplane controlplane-ui run-controlplane test-controlplane docker-dev docker-dev-down docker-dev-build
 
 VERSION ?= 1.0.0
 BIN_DIR = bin
@@ -93,3 +93,12 @@ docker-build:
 docker-push:
 	docker push $(DOCKER_IMAGE):$(VERSION)
 	docker push $(DOCKER_IMAGE):latest
+
+docker-dev:
+	docker compose -f docker-compose.dev.yml up --build
+
+docker-dev-down:
+	docker compose -f docker-compose.dev.yml down
+
+docker-dev-build:
+	docker build -f Dockerfile.dev -t torana-data:dev .

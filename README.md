@@ -221,6 +221,23 @@ make docker-build
 docker run -p 8080:8080 -p 8443:8443 gateway-data:latest
 ```
 
+### Container Development (Live Reload)
+
+Changes made on the host are automatically compiled and reloaded inside the running container in real-time via [Air](https://github.com/air-verse/air) and bind volume mounts:
+
+```bash
+# Start development container with hot-reloading
+make docker-dev
+# or using docker compose directly:
+docker compose up
+
+# Stop development container
+make docker-dev-down
+# or:
+docker compose down
+```
+
+
 ---
 
 ## Configuration Example: MCP Tool Policy

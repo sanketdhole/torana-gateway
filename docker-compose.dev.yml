@@ -1,0 +1,29 @@
+services:
+  gateway-data:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: torana-data:dev
+    container_name: torana-gateway-data-dev
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      # Mount current source directory to enable direct live-reload on host file changes
+      - .:/app
+      # Persist static NodeID and data across container restarts
+      - ./data:/data
+      # Cache Go modules to avoid re-downloading on rebuild
+      - go-pkg-mod:/go/pkg/mod
+    environment:
+      - LISTEN_HTTP=:8080
+      - LISTEN_GRPC=:9090
+      - GATEWAY_NAMESPACE=default
+      - ENV=development
+      - DEBUG=true
+      - LOG_LEVEL=debug
+      - TORANA_NODE_ID_FILE=/data/node_id
+    restart: unless-stopped
+
+volumes:
+  go-pkg-mod:
