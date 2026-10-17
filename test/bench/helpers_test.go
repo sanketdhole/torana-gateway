@@ -203,3 +203,14 @@ func buildChain(n int) *pipeline.Chain {
 	}
 	return pipeline.NewChain(filters...)
 }
+
+// newBenchClient creates an HTTP client with high idle connection limits to prevent socket exhaustion.
+func newBenchClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        10000,
+			MaxIdleConnsPerHost: 10000,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+}
