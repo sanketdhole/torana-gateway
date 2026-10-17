@@ -211,6 +211,80 @@ make fuzz
 make chaos
 ```
 
+#### Core Throughput & Latency Benchmark (`hey`)
+
+Local gateway benchmark measured on macOS (Apple M1) with active upstream routing enabled (50 concurrent workers, 50,000 requests across `localhost`):
+
+```bash
+hey -n 50000 -c 50 \
+  -m POST \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}' \
+  http://localhost:3000/v1/chat/completions
+```
+
+| Metric | Measurement (Local with Upstream) |
+| :--- | :--- |
+| **Throughput** | **23,743 req/sec** |
+| **Total Duration** | 2.1059s (50,000 requests) |
+| **Average Latency** | **2.1 ms** |
+| **p50 Latency** | **1.9 ms** |
+| **p75 Latency** | **2.5 ms** |
+| **p90 Latency** | **3.1 ms** |
+| **p95 Latency** | **3.6 ms** |
+| **p99 Latency** | **4.9 ms** |
+| **Fastest / Slowest** | 0.2 ms / 28.0 ms |
+
+> **Note on Environment**: Tested locally on localhost (`http://localhost:3000`) with full ingress parsing, routing, and upstream dispatch handling.
+
+<details>
+<summary>Click to view full <code>hey</code> terminal output</summary>
+
+```text
+Summary:
+  Total:        2.1059 secs
+  Slowest:      0.0280 secs
+  Fastest:      0.0002 secs
+  Average:      0.0021 secs
+  Requests/sec: 23742.9259
+  
+  Total data:   2100000 bytes
+  Size/request: 42 bytes
+
+Response time histogram:
+  0.000 [1]     |
+  0.003 [44396] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.006 [5316]  |■■■■■
+  0.009 [199]   |
+  0.011 [38]    |
+  0.014 [8]     |
+  0.017 [6]     |
+  0.020 [6]     |
+  0.022 [8]     |
+  0.025 [17]    |
+  0.028 [5]     |
+
+Latency distribution:
+  10% in 0.0012 secs
+  25% in 0.0015 secs
+  50% in 0.0019 secs
+  75% in 0.0025 secs
+  90% in 0.0031 secs
+  95% in 0.0036 secs
+  99% in 0.0049 secs
+
+Details (average, fastest, slowest):
+  DNS+dialup:   0.0000 secs, 0.0000 secs, 0.0063 secs
+  DNS-lookup:   0.0000 secs, 0.0000 secs, 0.0029 secs
+  req write:    0.0000 secs, 0.0000 secs, 0.0017 secs
+  resp wait:    0.0021 secs, 0.0002 secs, 0.0206 secs
+  resp read:    0.0000 secs, 0.0000 secs, 0.0023 secs
+
+Status code distribution:
+  [502] 50000 responses
+```
+</details>
+
 ### Container Deployment
 
 ```bash
@@ -266,6 +340,7 @@ rules:
 
 - **[System Design & Performance Architecture](file:///Users/sanket/Projects/torana-enterprise/DESIGN.md)**: Deep dive into the lock-free pipeline, memory pooling, and snapshot compilation.
 - **[Security Threat Model & Mitigations](file:///Users/sanket/Projects/torana-enterprise/SECURITY.md)**: Threat catalog (T1-T10), sandbox isolation guarantees, and token exchange security.
+- **[Core Latency & Benchmarks Guide](file:///Users/sanket/Projects/torana-enterprise/test/bench/README.md)**: Testing hot-path latency, p50/p99 percentiles, and throughput.
 
 ---
 

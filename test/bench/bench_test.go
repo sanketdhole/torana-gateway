@@ -50,7 +50,7 @@ func httpProxyBenchmark(b *testing.B, numFilters int, filterFactory func(int) pi
 	}
 	chain := pipeline.NewChain(filters...)
 
-	client := upstream.Client()
+	client := newBenchClient()
 
 	lc := newLatencyCollector(b.N)
 	before := captureMemStats()
@@ -142,7 +142,7 @@ func BenchmarkSSE_Stream(b *testing.B) {
 
 	rtr := router.Compile(snap)
 	chain := buildChain(1)
-	client := upstream.Client()
+	client := newBenchClient()
 
 	lc := newLatencyCollector(b.N)
 	before := captureMemStats()
@@ -285,7 +285,7 @@ func BenchmarkHTTP_EndToEnd_httptest(b *testing.B) {
 	ts := httptest.NewServer(proxyHandler)
 	defer ts.Close()
 
-	client := ts.Client()
+	client := newBenchClient()
 
 	lc := newLatencyCollector(b.N)
 	before := captureMemStats()
