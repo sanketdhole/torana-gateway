@@ -1,0 +1,226 @@
+name: Release & Container Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  verify-and-version:
+    name: Verify Release Branch & Extract Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.validate.outputs.tag }}
+      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
+    steps:
+      - name: Checkout Code with Full History
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Tag Originated from Release Branch
+        id: validate
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          COMMIT_SHA=$(git rev-parse HEAD)
+
+          echo "======================================================="
+          echo "Processing Tag:    ${TAG}"
+          echo "Clean Version:     ${VERSION}"
+          echo "Target Commit:     ${COMMIT_SHA}"
+          echo "======================================================="
+
+          # Fetch remote release branches for ancestry check
+          git fetch origin Release:refs/remotes/origin/Release 2>/dev/null || true
+          git fetch origin release:refs/remotes/origin/release 2>/dev/null || true
+
+          IS_ON_RELEASE="false"
+          TARGET_BRANCH=""
+
+          for b in "origin/Release" "origin/release"; do
+            if git rev-parse --verify "$b" >/dev/null 2>&1; then
+              # Check if the tagged commit is an ancestor of or contained in the release branch
+              if git merge-base --is-ancestor HEAD "$b" 2>/dev/null; then
+                IS_ON_RELEASE="true"
+                TARGET_BRANCH="$b"
+                break
+              fi
+            fi
+          done
+
+          if [ "$IS_ON_RELEASE" != "true" ]; then
+            echo "::error::[SECURITY REJECTION] Release tag '${TAG}' (commit ${COMMIT_SHA}) was NOT created from the 'Release' branch!"
+            echo "::error::Release tags must originate exclusively from the 'Release' or 'release' branch."
+            echo ""
+            echo "Remote branches containing commit ${COMMIT_SHA}:"
+            git branch -r --contains HEAD || echo "  (none)"
+            exit 1
+          fi
+
+          echo "Verified: Tag '${TAG}' is confirmed to belong to '${TARGET_BRANCH}'."
+
+          # Check if tag is a prerelease (contains '-' like -rc, -alpha, -beta)
+          if [[ "${VERSION}" == *-* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+
+  build-binaries:
+    name: Build gateway-data (${{ matrix.os }}/${{ matrix.arch }})
+    needs: verify-and-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
+      - name: Compile gateway-data Binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ needs.verify-and-version.outputs.version }}
+        run: |
+          mkdir -p build/
+          go build -trimpath \
+            -ldflags "-s -w -extldflags '-static' -X main.Version=${VERSION}" \
+            -o build/gateway-data \
+            ./cmd/gateway-data
+
+      - name: Package Binary Archive
+        run: |
+          PKG_NAME="gateway-data-${{ needs.verify-and-version.outputs.tag }}-${{ matrix.os }}-${{ matrix.arch }}"
+          mkdir -p "dist/${PKG_NAME}"
+          cp build/gateway-data "dist/${PKG_NAME}/"
+          cp LICENSE "dist/${PKG_NAME}/" 2>/dev/null || true
+          cp README.md "dist/${PKG_NAME}/" 2>/dev/null || true
+
+          cd dist/
+          tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          rm -rf "${PKG_NAME}"
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          retention-days: 14
+
+  build-docker:
+    name: Build & Push Docker Image
+    needs: verify-and-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub (Optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine Docker Image Tags
+        id: tags
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_REPO="ghcr.io/${OWNER_LOWER}/torana-data"
+          TAGS="${GHCR_REPO}:latest,${GHCR_REPO}:${{ needs.verify-and-version.outputs.tag }},${GHCR_REPO}:${{ needs.verify-and-version.outputs.version }}"
+
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            DH_REPO="${{ secrets.DOCKERHUB_USERNAME }}/torana-data"
+            TAGS="${TAGS},${DH_REPO}:latest,${DH_REPO}:${{ needs.verify-and-version.outputs.tag }},${DH_REPO}:${{ needs.verify-and-version.outputs.version }}"
+          fi
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+
+      - name: Build and Push Multi-Arch Container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VERSION=${{ needs.verify-and-version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-release:
+    name: Publish GitHub Release
+    needs: [verify-and-version, build-binaries, build-docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Binary Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Generate Checksums
+        run: |
+          mkdir -p release-assets/
+          cp artifacts/*.tar.gz release-assets/
+          cd release-assets/
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.verify-and-version.outputs.tag }}
+          name: Release ${{ needs.verify-and-version.outputs.tag }}
+          prerelease: ${{ needs.verify-and-version.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            release-assets/*.tar.gz
+            release-assets/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
