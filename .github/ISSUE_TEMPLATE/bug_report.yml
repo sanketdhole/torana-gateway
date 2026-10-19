@@ -1,0 +1,74 @@
+name: "🐛 Bug Report"
+description: "File a report to help us reproduce and fix an issue"
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+        
+        > [!IMPORTANT]
+        > If you have discovered a security vulnerability, please **DO NOT** open a public issue.
+        > Follow our security disclosure process in [SECURITY.md](SECURITY.md) or email security@phaselume.com.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: Describe the problem...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Start gateway with configuration '...'
+        2. Send MCP tool request '...'
+        3. Observe error '...'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: Describe expected behavior...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Error Output
+      description: Paste any relevant terminal logs, stack traces, or gateway debug logs.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Torana Version
+      description: Output of `gateway-data --version` or git commit SHA.
+      placeholder: "e.g. 1.0.0 or commit abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Deployment Environment
+      options:
+        - Docker Compose / Docker Container
+        - Standalone Binary (macOS/Linux)
+        - Kubernetes
+        - Other (please describe below)
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true
+        - label: This issue does not contain sensitive passwords, tokens, or security vulnerabilities.
+          required: true

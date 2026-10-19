@@ -2,6 +2,8 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/phaselume/torana)](https://goreportcard.com/report/github.com/phaselume/torana)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 **Torana** is a high-performance, zero-trust security and policy gateway designed specifically for **Autonomous AI Agents**, **Agentic Tool Calling**, and **Enterprise Asset Access**. 
 
@@ -338,9 +340,22 @@ rules:
 
 ## Documentation & Architecture
 
-- **[System Design & Performance Architecture](file:///Users/sanket/Projects/torana-enterprise/DESIGN.md)**: Deep dive into the lock-free pipeline, memory pooling, and snapshot compilation.
-- **[Security Threat Model & Mitigations](file:///Users/sanket/Projects/torana-enterprise/SECURITY.md)**: Threat catalog (T1-T10), sandbox isolation guarantees, and token exchange security.
-- **[Core Latency & Benchmarks Guide](file:///Users/sanket/Projects/torana-enterprise/test/bench/README.md)**: Testing hot-path latency, p50/p99 percentiles, and throughput.
+- **[System Design & Performance Architecture](DESIGN.md)**: Deep dive into the lock-free pipeline, memory pooling, and snapshot compilation.
+- **[Security Threat Model & Mitigations](SECURITY.md)**: Threat catalog (T1-T10), sandbox isolation guarantees, and token exchange security.
+- **[Core Latency & Benchmarks Guide](test/bench/README.md)**: Testing hot-path latency, p50/p99 percentiles, and throughput.
+- **[Contribution Guidelines](CONTRIBUTING.md)**: Complete guide to setting up your local dev environment, coding standards, and submitting PRs.
+- **[Code of Conduct](CODE_OF_CONDUCT.md)**: Our standards for an open, welcoming, and inclusive community.
+
+---
+
+## Contributing
+
+We warmly welcome contributions from the open-source community! Whether you are fixing an issue, enhancing MCP tool governance, adding support for new agent frameworks, or optimizing latency on the hot path, your help is appreciated.
+
+- **Get Started**: Read our **[Contribution Guidelines](CONTRIBUTING.md)** for detailed development setup, coding standards, and PR workflows.
+- **Community Standards**: We are committed to an inclusive, welcoming environment. Please review our **[Code of Conduct](CODE_OF_CONDUCT.md)**.
+- **Good First Issues**: Check out issues labeled [`good first issue`](https://github.com/sanketdhole/torana-enterprise/labels/good%20first%20issue) to jump in right away.
+- **Discussions**: Share ideas, propose architectural changes, or ask questions in [GitHub Discussions](https://github.com/sanketdhole/torana-enterprise/discussions).
 
 ---
 

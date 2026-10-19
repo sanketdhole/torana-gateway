@@ -1,0 +1,40 @@
+name: "✨ Feature Request"
+description: "Suggest an idea or new capability for Torana"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an idea to make Torana better!
+        
+        Please provide as much context as possible on why this feature is needed and how it fits into autonomous agent workflows or enterprise security.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement or Use Case
+      description: Is your feature request related to a specific challenge or limitation?
+      placeholder: "I am trying to run CrewAI agents with an enterprise SQL MCP server, but..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution or API Design
+      description: Describe your proposed solution or how you envision this working.
+      placeholder: "Describe the new policy rule, protocol filter, CLI flag, or handler..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches or workarounds have you considered?
+      placeholder: "We considered using an external reverse proxy, but..."
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Willingness to Contribute
+      options:
+        - label: I would be willing to submit a Pull Request to implement this feature.
+          required: false
