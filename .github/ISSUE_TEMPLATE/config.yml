@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "🔒 Security Vulnerability Report"
+    url: "mailto:security@phaselume.com"
+    about: "Report security vulnerabilities responsibly. Please do not open public issues for security exploits."
+  - name: "💬 Community & Q&A Discussions"
+    url: "https://github.com/sanketdhole/torana-enterprise/discussions"
+    about: "Ask questions, share ideas, or discuss AI agent patterns with the community."
