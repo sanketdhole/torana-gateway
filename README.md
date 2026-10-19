@@ -1,17 +1,21 @@
 # Torana: The Enterprise Gateway for AI Agents
 
-[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
-[![Protobuf Wire Protocol](https://img.shields.io/badge/gRPC-Wire%20Compatible-4285F4?style=flat&logo=google)](api/proto/controlplane/v1/controlplane.proto)
-[![Security Authority](https://img.shields.io/badge/Crypto-Ed25519%20Signed-10B981?style=flat)](pkg/crypto)
-[![Mutual TLS](https://img.shields.io/badge/Security-mTLS%20Zero--Trust-059669?style=flat)](internal/security/authn/mtls.go)
-[![Model Context Protocol](https://img.shields.io/badge/MCP-Tool%20Governance-8B5CF6?style=flat)](internal/ingress/mcp)
-[![RFC 8693 STS](https://img.shields.io/badge/Delegation-RFC%208693%20STS-6366F1?style=flat)](internal/security/sts)
-[![Google CEL Engine](https://img.shields.io/badge/Policy-Google%20CEL-F59E0B?style=flat)](internal/security/authz)
-[![WebAssembly Runtime](https://img.shields.io/badge/Plugins-WASM%20%2F%20Wazero-654FF0?style=flat&logo=webassembly)](internal/plugins)
-[![OpenTelemetry](https://img.shields.io/badge/Telemetry-OpenTelemetry-blue?style=flat&logo=opentelemetry)](internal/observe)
+<p align="center">
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat&logo=go" alt="Go Version"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"/></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"/></a>
+  <a href="CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant"/></a>
+  <br/>
+  <a href="internal/ingress/mcp"><img src="https://img.shields.io/badge/MCP-Tool%20Governance-8B5CF6?style=flat" alt="Model Context Protocol"/></a>
+  <a href="api/proto/controlplane/v1/controlplane.proto"><img src="https://img.shields.io/badge/gRPC-Wire%20Compatible-4285F4?style=flat&logo=google" alt="Protobuf Wire Protocol"/></a>
+  <a href="internal/security/sts"><img src="https://img.shields.io/badge/Delegation-RFC%208693%20STS-6366F1?style=flat" alt="RFC 8693 STS"/></a>
+  <a href="internal/security/authz"><img src="https://img.shields.io/badge/Policy-Google%20CEL-F59E0B?style=flat" alt="Google CEL Engine"/></a>
+  <br/>
+  <a href="internal/security/authn/mtls.go"><img src="https://img.shields.io/badge/Security-mTLS%20Zero--Trust-059669?style=flat" alt="Mutual TLS"/></a>
+  <a href="pkg/crypto"><img src="https://img.shields.io/badge/Crypto-Ed25519%20Signed-10B981?style=flat" alt="Security Authority"/></a>
+  <a href="internal/plugins"><img src="https://img.shields.io/badge/Plugins-WASM%20%2F%20Wazero-654FF0?style=flat&logo=webassembly" alt="WebAssembly Runtime"/></a>
+  <a href="internal/observe"><img src="https://img.shields.io/badge/Telemetry-OpenTelemetry-blue?style=flat&logo=opentelemetry" alt="OpenTelemetry"/></a>
+</p>
 
 **Torana** is a high-performance, zero-trust security and policy gateway designed specifically for **Autonomous AI Agents**, **Agentic Tool Calling**, and **Enterprise Asset Access**. 
 
