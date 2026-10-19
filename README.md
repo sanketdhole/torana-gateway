@@ -1,9 +1,11 @@
 # Torana: The Enterprise Gateway for AI Agents
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/phaselume/torana)](https://goreportcard.com/report/github.com/phaselume/torana)
+[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+[![Protobuf Wire Protocol](https://img.shields.io/badge/gRPC-Wire%20Compatible-4285F4?style=flat&logo=google)](api/proto/controlplane/v1/controlplane.proto)
+[![Security Authority](https://img.shields.io/badge/Crypto-Ed25519%20Signed-10B981?style=flat)](pkg/crypto)
 
 **Torana** is a high-performance, zero-trust security and policy gateway designed specifically for **Autonomous AI Agents**, **Agentic Tool Calling**, and **Enterprise Asset Access**. 
 
